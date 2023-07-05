@@ -5,23 +5,12 @@
 # Ignore all files named .DS_Store or ending with .log
 **/.DS_Store
 **.log
-
+**.out
 # Ignore files from analysis and data
-*/data/*
-*/analysis/*
-
-
-**/*.fastq.gz
-**/*.bam
-**/*bai
-
+**/data/*
+**/analysis/*
+**/results/*
 
 # Include script files
-!*/scripts/*
-# Include result script files
-!*/results/*.Rmd
-!*/results/*.R
-!*/results/*.py
-!*/results/**/*.Rmd
-!*/results/**/*.R
-!*/results/**/*.py
+!**/scripts/*
+!**/documentation/*
