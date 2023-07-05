@@ -1,0 +1,15 @@
+---
+title: "RNAseq_QC"
+author: "JD"
+date: "2023-06-20"
+output: html_document
+---
+
+
+```{r}
+
+```
+
+```{r}
+
+```
