@@ -1,0 +1,1407 @@
+---
+title: "NBL RNA-seq tumor-enrichment output"
+author: "Jip van Dinter"
+date: '2023-03-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(DESeq2)
+library(magrittr)
+library(readr)
+```
+
+## Intro
+
+This RMD describes all the steps and code to go from Salmon quantification to
+all result files required for downstream figures. A brief outline of the RMD:
+
+1. Load in Salmon quant files
+2. Create metadata based on available files
+3. Perform DEseq2 analyses
+4. Filter for NBL-enriched genes
+5. Additional steps
+
+```{r base parameters, eval=F}
+tumor_type="RMS"
+pmc_tumor_code=c("Alveolar rhabdomyosarcoma","Embryonal rhabdomyosarcoma, NOS","Spindle cell rhabdomyosarcoma","Rhabdomyosarcoma, NOS")
+sj_tumor_code=c("ARMS","ERMS","SCRMS","RMS")
+basedir="/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes"
+workdir=paste(basedir,"20221020_JD_quant_tumor_cohorts", sep = "/")
+savedir=paste(workdir, "analysis",tumor_type, sep = "/")
+gtf=paste(basedir,"/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/",
+          paste0(tumor_type,"_full_novel_filtered_corrected.gtf"), sep = "/")
+txdb=paste(basedir,"/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/",
+           paste0(tumor_type,"_full"),
+           paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+passed_df_loc=paste(workdir,"analysis","metadata","included_biomaterials.txt",sep="/")
+
+# Metadata locations
+meta_loc <- list.files(paste(workdir,"analysis","metadata", sep = "/"), full.names = T)
+pmc_meta_loc <- meta_loc[1]
+evo_meta_loc <- meta_loc[2]
+gtex_meta_loc <- meta_loc[4]
+passed_df_loc <- meta_loc[6]
+pmc_subtype_loc <- meta_loc[7]
+atlas_meta_loc <- meta_loc[8]
+sj_meta_loc <- meta_loc[9]
+
+# cohort size
+sj_size <- 62
+pmc_size <- 58
+evo_size <- 313
+gtex_size <- 1029
+atlas_size <- 293
+
+# DESeq2 settings
+healthy_lfc <- 3
+```
+
+Remove mono-exonic genes and genes without a poly-A tail from the comparison
+
+```{r Prefilter genes for DEA}
+polya_feats <- read.delim("/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/gencode.v36.metadata.PolyA_feature", header = F)
+canon_gtf <- rtracklayer::import.gff("/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/Homo_sapiens.GRCh38.102.gtf")
+canon_df <- as.data.frame(canon_gtf) %>%
+  subset(type == "transcript")
+
+canon_gencode_table <- data.frame(gene_id = canon_df$gene_id,
+                                  gencode_id = paste(canon_df$transcript_id,canon_df$transcript_version,sep="."))
+canon_gencode_table <- canon_gencode_table[!duplicated(canon_gencode_table),]
+
+polya_feats <- dplyr::left_join(polya_feats,canon_gencode_table, by = c("V1" = "gencode_id"))
+
+t <- as.data.frame(table(canon_gtf[which(canon_gtf$type == "exon"),]$transcript_id))
+colnames(t) <- c("transcript_id",
+                "exon_count")
+
+# Each transcript has a transcript row and exon row
+gtf_count <- dplyr::left_join(as.data.frame(canon_gtf),
+                              t,
+                              by = "transcript_id")
+
+mono_transcripts <- subset(gtf_count,
+                           exon_count < 2)[,c("gene_id","transcript_id","transcript_version")]
+
+mono_transcripts$gencode <- paste(mono_transcripts$transcript_id,mono_transcripts$transcript_version,sep=".")
+mono_transcripts <- mono_transcripts[!duplicated(mono_transcripts),]
+
+selected_genes_both <- canon_df[which(canon_df$gene_id %in% polya_feats$gene_id &
+                                   !(canon_df$gene_id %in% mono_transcripts$gene_id)),c("gene_id","gene_biotype")]
+
+selected_genes_polya <- canon_df[which(canon_df$gene_id %in% polya_feats$gene_id),c("gene_id","gene_biotype")]
+
+
+selected_genes_mono <- canon_df[which(!(canon_df$gene_id %in% mono_transcripts$gene_id)),c("gene_id","gene_biotype")]
+
+check_biotype <- dplyr::full_join(
+as.data.frame(table(selected_genes_mono$gene_biotype)),
+as.data.frame(table(selected_genes_polya$gene_biotype)), by = "Var1")
+colnames(check_biotype) <- c("gene_biotype","Mono-exonic","PolyA")
+
+upset <- list("PolyA selection" = selected_genes_polya$gene_id,
+              "Mono-exonic exclusion" = selected_genes_mono$gene_id,
+              "both selections" = selected_genes_both$gene_id)
+
+m1 <- ComplexHeatmap::make_comb_mat(upset)
+
+top_annotation <- ComplexHeatmap::upset_top_annotation(m1, add_numbers = TRUE)
+right_annotation <- ComplexHeatmap::upset_right_annotation(m1, add_numbers = TRUE)
+ComplexHeatmap::UpSet(m1,
+                      top_annotation = top_annotation,
+                      right_annotation = right_annotation)
+
+```
+
+Create TX-2-Gene conversion table
+
+```{r create TXDB gene to tx, eval=F}
+
+txdb <- AnnotationDbi::loadDb(txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+```
+
+## Pre-quant data collection
+
+Load the RMS GTF
+
+```{r GTF}
+
+gtf <- rtracklayer::import.gff(gtf)
+gtf_df <- as.data.frame(gtf) %>%
+  subset(type == "transcript")
+gtf_gene_df <- as.data.frame(gtf) %>%
+  subset(type == "gene")
+
+```
+
+Collect all quantified samples
+
+```{r count subset, eval=F}
+
+count_files <- list.files(paste(workdir,paste0("data/processed/salmon_quant/",
+                                               tumor_type),
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+all(file.exists(count_files))
+
+```
+
+Using the quant files, select the correct samples per cohort
+
+```{r sample selection, eval=F}
+
+sample_names <- basename(gsub("/quant.sf","",count_files))
+passed_samples <- read.delim(passed_df_loc, header = T)
+passed_samples$biomaterial <- ifelse(grepl("^PM",passed_samples$sample),
+                                     gsub("-.*","",passed_samples$sample),
+                                     passed_samples$sample)
+
+# Select PMC samples that pass filtering and are tumor tissue
+pmc_correct <- read.delim(pmc_meta_loc) %>%
+  dplyr::filter(Biomaterial.Id %in% passed_samples$biomaterial &
+                  Biomaterial.Id %in% sample_names & 
+                  X01..Tissue == "tissue specimen")
+pmc_all_samples <- pmc_correct$Biomaterial.Id
+pmc_tumor_samples <- pmc_correct[which(pmc_correct$X01..Tumor.type %in% pmc_tumor_code),]$Biomaterial.Id
+
+# Select SJ samples that pass filtering and are diagnosis
+sj_correct <- read.delim(sj_meta_loc) %>%
+  dplyr::filter(sample_name %in% passed_samples$sample & 
+                  sample_name %in% sample_names & 
+                  sample_type == "Diagnosis")
+
+sj_all_samples <- sj_correct$sample_name
+sj_tumor_samples <- sj_correct[which(sj_correct$attr_oncotree_disease_code %in% sj_tumor_code),]$sample_name
+
+
+# Combine sample names per cohort
+samples_tumor <- c(pmc_tumor_samples,sj_tumor_samples)
+samples_gtex <- c(pmc_tumor_samples,sj_tumor_samples,sample_names[grepl("GTEX",sample_names)])
+samples_evo <- c(pmc_tumor_samples,sj_tumor_samples,sample_names[grepl("Human.",sample_names)])
+samples_atlas <- c(pmc_tumor_samples,sj_tumor_samples,sample_names[grepl("SAMN",sample_names)])
+samples_pt <- c(pmc_all_samples,sj_all_samples)
+
+```
+
+Check which samples ribo-seq is performed upon. To see if it is likely to find an
+ORF back in the ribo-seq data.
+
+```{r riboseq-check, eval=F}
+riboseq_samples <- c('PMCID288AAK',
+'PMCID748AAL',
+'PMCID917AAM',
+'PMCID959AAM',
+'PMCID077AAM',
+'PMCID108AAA',
+'PMCID114AAA',
+'PMCID323AAA',
+'PMCID329AAA',
+'PMCID366AAA',
+'PMCID384AAO',
+'PMCID407AAA',
+'PMCID665AAM',
+'PMCID910AAJ',
+'PMCID111AAH',
+'PMCID143AAM',
+'PMCID155AAO',
+'PMCID187AAA',
+'PMCID827AAJ')
+
+pmc_df <- read.delim(pmc_meta_loc) 
+pmc_df <- pmc_df %>%
+  dplyr::filter(Subject.Id %in% riboseq_samples &
+                  Biomaterial.Id %in% gsub("-.*","",passed_samples$sample) & 
+                  Biomaterial.Id %in% sample_names)
+
+write.table(pmc_df, file = paste("/hpc/pmc_vanheesch/projects/Jip/riboseq/20230502_JD",tumor_type,"corrected/analysis/RMS_used_riboseq_samples_metadata.txt",sep="_"),
+            quote = F, sep = ";")
+
+```
+
+## Load counts
+
+Load the count data using the previously established RDS. Run the following chunk
+in SLURM to get the correct count matrix RDS.
+
+```{bash create count RDS,eval=F}
+#!/bin/bash
+#SBATCH --job-name create_count_matrix
+#SBATCH --mem=120G
+#SBATCH --time=12:00:00
+
+module load R/4.2.1
+
+/usr/bin/env Rscript -<<EOF
+library(ggplot2)
+library(DESeq2)
+library(magrittr)
+library(readr)
+
+tumor_type="RMS"
+basedir="/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/"
+workdir=paste(basedir,"20221020_JD_quant_tumor_cohorts", sep = "/")
+savedir=paste(workdir, "analysis", sep = "/")
+tumor_gtf=paste0(basedir,"/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/",tumor_type,"_full_novel_filtered_corrected.gtf")
+tumor_txdb=paste0(basedir,"/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/",
+                 tumor_type,"_full/",
+                 tumor_type,"_full_novel_filtered_corrected.gtf_TxDb")
+gtf <- rtracklayer::import.gff(tumor_gtf)
+txdb <- AnnotationDbi::loadDb(tumor_txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+count_files <- list.files(paste0(workdir,"/data/processed/salmon_quant/",tumor_type), recursive = T, pattern = "quant.sf", full.names = T)
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+
+txi <- tximport::tximport(count_files, type = "salmon", tx2gene = tx2gene, dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+saveRDS(txi, file = paste(savedir, paste0(tumor_type,"_counts_full.RDS"), sep = "/"))
+print(paste0("Count Matrix successfully created for ",tumor_type,"!"))
+EOF
+
+```
+
+Create different txi objects for the following conditions:
+* NBL - SJ & PMC
+* GTEX - SJ & PMC & GTEX
+* EVO - SJ & PMC & EVO
+* ATLAS - SJ & PMC & R2 RNA ATLAS
+* PT - SJ & PMC & pediatric tumors
+
+```{r create counts table, eval=F}
+txi <- readRDS(paste(savedir,"processed", "RMS_counts_full.RDS", sep = "/"))
+
+# NBL cohort
+txi_tumor <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% c(samples_tumor))],
+                counts = txi$counts[,which(colnames(txi$counts) %in% c(samples_tumor))],
+                length = txi$counts[,which(colnames(txi$length) %in% c(samples_tumor))],
+                countsFromAbundance = "scaledTPM")
+
+# NBL + GTEX
+txi_gtex <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% c(samples_gtex))],
+                counts = txi$counts[,which(colnames(txi$counts) %in% c(samples_gtex))],
+                length = txi$counts[,which(colnames(txi$length) %in% c(samples_gtex))],
+                countsFromAbundance = "scaledTPM")
+
+# NBL + EVO DEVO
+txi_evo <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% samples_evo)],
+                counts = txi$counts[,which(colnames(txi$counts) %in% samples_evo)],
+                length = txi$counts[,which(colnames(txi$length) %in% samples_evo)],
+                countsFromAbundance = "scaledTPM")
+
+# NBL + R2 RNA ATLAS
+txi_atlas <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% samples_atlas)],
+                counts = txi$counts[,which(colnames(txi$counts) %in% samples_atlas)],
+                length = txi$counts[,which(colnames(txi$length) %in% samples_atlas)],
+                countsFromAbundance = "scaledTPM")
+
+# NBL + PT
+txi_pt <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% samples_pt)],
+                counts = txi$counts[,which(colnames(txi$counts) %in% samples_pt)],
+                length = txi$counts[,which(colnames(txi$length) %in% samples_pt)],
+                countsFromAbundance = "scaledTPM")
+
+```
+
+Skip Batch effect correction, as library type bias is too confounding and reduces
+biological signal. Keep for if we ever want te re-implement batch correction using
+SVA
+
+```{r Remove batch effects, eval=F}
+
+# NBL
+raw_counts <- txi_tumor$counts
+  # Remove batch effect
+cor_counts <- sva::ComBat_seq(counts = raw_counts, batch = meta_tumor$batch, group = meta_tumor$type, full_mod = T)
+txi_tumor$counts <- cor_counts
+saveRDS(txi_tumor, file = paste(savedir, "NBL_txi_batchcor.RDS", sep = "/"))
+
+# GTEX
+raw_counts <- txi_gtex$counts
+# Remove batch effect
+cor_counts <- sva::ComBat_seq(counts = raw_counts, batch = meta_gtex$batch)
+txi_gtex$counts <- cor_counts
+saveRDS(txi_gtex, file = paste(savedir, "GTEX_txi_batchcor.RDS", sep = "/"))
+
+# EVO
+raw_counts <- txi_evo$counts
+  # Remove batch effect
+cor_counts <- sva::ComBat_seq(counts = raw_counts, batch = meta_evo$batch)
+txi_evo$counts <- cor_counts
+saveRDS(txi_evo, file = paste(savedir, "EVO_txi_batchcor.RDS", sep = "/"))
+
+# ATLAS
+raw_counts <- txi_atlas$counts
+  # Remove batch effect
+cor_counts <- sva::ComBat_seq(counts = raw_counts, batch = meta_atlas$batch)
+txi_atlas$counts <- cor_counts
+saveRDS(txi_atlas, file = paste(savedir, "ATLAS_txi_batchcor.RDS", sep = "/"))
+
+```
+
+## Create metadata
+
+Load our sample data, and subset on the files that are present in our cohort.
+Harmonize our sample data for a few metadata columns in our heatmap. 
+We only selected the metadata for the following features:
+1. batch origin
+2. disease status
+3. tissue origin
+4. sex
+5. molecular subtype
+
+```{r load metadata, eval=F}
+# R2 Atlas
+atlas_meta <-
+  read.delim(atlas_meta_loc) %>%
+  dplyr::filter(BioSample %in% sample_names) %>%
+  dplyr::select(BioSample, 
+                source_name, 
+                sample_type)
+
+# SJ tissue
+sj_meta <- read.delim(sj_meta_loc)
+sj_all_meta <- sj_meta %>%
+  dplyr::filter(sample_name %in% sj_all_samples
+                ) %>%
+  dplyr::select(subject_name,
+                sample_name,
+                sample_type,
+                sj_long_disease_name,
+                attr_oncotree_disease_code,
+                attr_sex,
+                attr_subtype_biomarkers)
+
+sj_tumor_meta <- sj_meta %>%
+  dplyr::filter(sample_name %in% sj_tumor_samples
+                ) %>%
+  dplyr::select(subject_name,
+                sample_name,
+                sample_type,
+                sj_long_disease_name,
+                attr_oncotree_disease_code,
+                attr_sex,
+                attr_subtype_biomarkers)
+
+# PMC tissue
+pmc_all_meta <- read.delim(pmc_meta_loc) %>%
+  dplyr::filter(Biomaterial.Id %in% pmc_all_samples
+                  ) %>%
+  dplyr::select(Biomaterial.Id,
+                Subject.Id,
+                X01..Age.at.first.diagnosis,
+                X01..Tissue,
+                X01..Tumor.type,
+                X02..Topography,
+                X03..Tumor.stage,
+                
+                X03..Sex)
+
+pmc_tumor_meta <- read.delim(pmc_meta_loc) %>%
+  dplyr::filter(Biomaterial.Id %in% pmc_tumor_samples
+                  ) %>%
+  dplyr::select(Biomaterial.Id,
+                Subject.Id,
+                X01..Age.at.first.diagnosis,
+                X01..Tissue,
+                X01..Tumor.type,
+                X02..Topography,
+                X03..Tumor.stage,
+                X03..Sex)
+
+# GTEx tissue
+gtex_meta <- read.delim(gtex_meta_loc) %>%
+  dplyr::filter(specimen_id %in% sample_names) %>%
+  dplyr::select(specimen_id,
+                tissue_type,
+                tissue_type_detail,
+                age_value,sex)
+
+# EVO-DEVO
+evo_meta <- read.delim(evo_meta_loc) %>%
+  dplyr::filter(Source.Name %in% sample_names) %>%
+  dplyr::select(Source.Name,
+                Characteristics.sex.,
+                Characteristics.organism.part.,
+                Characteristics.age.,
+                Characteristics.developmental.stage.,
+                Unit..time.unit.)
+evo_meta$days_since_conception <- ifelse(grepl("post conception",evo_meta$Characteristics.developmental.stage.),
+                                         evo_meta$Characteristics.age.*7,
+                                         ifelse(evo_meta$Unit..time.unit. == "day",
+                                                # roughly 40 weeks per pregnancy
+                                                280+evo_meta$Characteristics.age.,
+                                                ifelse(evo_meta$Unit..time.unit. == "month",
+                                                       280+182,
+                                                # correct for 
+                                                round(280+evo_meta$Characteristics.age.*365))))
+evo_meta$type <- paste(evo_meta$Characteristics.organism.part.,evo_meta$days_since_conception,sep = "_")
+
+```
+
+Annotate the risk group of NBL samples and annotate the molecular subtype of SJ
+samples.
+
+```{r subtype}
+
+# PMC
+
+pmc_subtype <- read.delim("/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221020_JD_quant_tumor_cohorts/analysis/RMS/PMC_RMS_subtype.txt")
+pmc_tumor_meta <- dplyr::left_join(pmc_tumor_meta,pmc_subtype,by = c("Subject.Id"="Patient.Id"))
+pmc_all_meta <- dplyr::left_join(pmc_all_meta,pmc_subtype,by = c("Subject.Id"="Patient.Id"))
+
+pmc_tumor_meta$X01..Tumor.type <- ifelse(pmc_tumor_meta$X01..Tumor.type == "Alveolar rhabdomyosarcoma",
+                                         "ARMS",
+                                         ifelse(pmc_tumor_meta$X01..Tumor.type == "Embryonal rhabdomyosarcoma, NOS",
+                                                "ERMS",
+                                                ifelse(pmc_tumor_meta$X01..Tumor.type == "Rhabdomyosarcoma, NOS", "RMS",ifelse(pmc_tumor_meta$X01..Tumor.type == "Spindle cell rhabdomyosarcoma", "SCRMS", pmc_tumor_meta$X01..Tumor.type))))
+pmc_all_meta$X01..Tumor.type <- ifelse(pmc_all_meta$X01..Tumor.type == "Alveolar rhabdomyosarcoma",
+                                         "ARMS",
+                                         ifelse(pmc_all_meta$X01..Tumor.type == "Embryonal rhabdomyosarcoma, NOS",
+                                                "ERMS",ifelse(pmc_all_meta$X01..Tumor.type == "Rhabdomyosarcoma, NOS", "RMS",ifelse(pmc_all_meta$X01..Tumor.type == "Spindle cell rhabdomyosarcoma", "SCRMS", pmc_all_meta$X01..Tumor.type))))
+
+# SJ
+
+sj_all_meta$attr_subtype_biomarkers <- ifelse(grepl("PAX3",sj_all_meta$attr_subtype_biomarkers),"PAX3-FOXO1",
+                                          ifelse(grepl("PAX7",sj_all_meta$attr_subtype_biomarkers),"PAX7-FOXO1",
+                                                 ifelse(sj_all_meta$attr_subtype_biomarkers == "None", "None",
+                                                        ifelse(sj_all_meta$attr_subtype_biomarkers == "Not Available", "Not Available","other"))))
+
+sj_tumor_meta$attr_subtype_biomarkers <- ifelse(grepl("PAX3",sj_tumor_meta$attr_subtype_biomarkers),"PAX3-FOXO1",
+                                          ifelse(grepl("PAX7",sj_tumor_meta$attr_subtype_biomarkers),"PAX7-FOXO1",
+                                                 ifelse(sj_tumor_meta$attr_subtype_biomarkers == "None", "None",
+                                                        ifelse(sj_tumor_meta$attr_subtype_biomarkers == "Not Available", "Not Available","other"))))
+
+```
+
+Create metadata for each TXI file
+
+***Jip, 08-03-2023:*** Change PT cohort when we have more PT samples quantified
+```{r create cohort metadata, eval=F}
+
+meta_pt <-
+  data.frame(
+    patient_id = c(pmc_all_meta$Subject.Id, sj_all_meta$subject_name),
+    sample_id = c(pmc_all_meta$Biomaterial.Id, sj_all_meta$sample_name),
+    sex = tolower(c(pmc_all_meta$X03..Sex, sj_all_meta$attr_sex)),
+    type = c(pmc_all_meta$subtype, sj_all_meta$attr_subtype_biomarkers),
+    batch = c(rep("PMC", nrow(pmc_all_meta)), rep("SJ", nrow(sj_all_meta))),
+    condition = c(ifelse(grepl("pendymoma",pmc_all_meta$X01..Tumor.type),"EPN",
+                         ifelse(grepl("RMS",pmc_all_meta$X01..Tumor.type),"RMS","NBL")), sj_all_meta$attr_oncotree_disease_code)
+  )
+
+meta_tumor <-
+  data.frame(
+    patient_id = c(pmc_tumor_meta$Subject.Id, sj_tumor_meta$subject_name),
+    sample_id = c(pmc_tumor_meta$Biomaterial.Id, sj_tumor_meta$sample_name),
+    sex = tolower(c(pmc_tumor_meta$X03..Sex, sj_tumor_meta$attr_sex)),
+    type = c(pmc_tumor_meta$subtype, sj_tumor_meta$attr_subtype_biomarkers),
+    batch = c(rep("PMC", pmc_size), rep("SJ", sj_size)),
+    condition = c(pmc_tumor_meta$X01..Tumor.type, sj_tumor_meta$attr_oncotree_disease_code)
+  )
+
+meta_gtex <-
+  data.frame(
+    sample_id = c(
+      pmc_tumor_meta$Biomaterial.Id,
+      sj_tumor_meta$sample_name,
+      gtex_meta$specimen_id
+    ),
+    sex = tolower(c(pmc_tumor_meta$X03..Sex, sj_tumor_meta$attr_sex, gtex_meta$sex)),
+    type = c(
+      rep("RMS", pmc_size),
+      rep("RMS", sj_size),
+      gtex_meta$tissue_type
+    ),
+    batch = c(
+      rep("PMC", pmc_size),
+      rep("SJ", sj_size),
+      rep("GTEX", gtex_size)
+    ),
+    condition = c(
+      pmc_tumor_meta$subtype,
+      sj_tumor_meta$attr_subtype_biomarkers,
+      rep("healthy", gtex_size)
+    )
+  )
+
+meta_evo <-
+  data.frame(
+    sample_id = c(
+      pmc_tumor_meta$Biomaterial.Id,
+      sj_tumor_meta$sample_name,
+      evo_meta$Source.Name
+    ),
+    sex = tolower(c(
+      pmc_tumor_meta$X03..Sex,
+      sj_tumor_meta$attr_sex,
+      evo_meta$Characteristics.sex.
+    )),
+    type = c(
+      rep("RMS", pmc_size),
+      rep("RMS", sj_size),
+      evo_meta$type
+    ),
+    batch = c(
+      rep("PMC", pmc_size),
+      rep("SJ", sj_size),
+      rep("EVO", evo_size)),
+    condition = c(
+      pmc_tumor_meta$subtype,
+      sj_tumor_meta$attr_subtype_biomarkers,
+      rep("healthy", evo_size)
+    )
+  )
+
+meta_evo$condition <- tidyr::replace_na(meta_evo$condition, "RMS")
+meta_evo$days <- as.numeric(ifelse(meta_evo$condition == "healthy",gsub(".*_","",meta_evo$type),0))
+meta_evo$type <- gsub("_.*","",meta_evo$type)
+meta_evo$tissue <- ifelse(meta_evo$condition == "healthy", meta_evo$type, tumor_type)
+meta_evo$sample_id <- factor(meta_evo$sample_id, levels = meta_evo[order(meta_evo$days),]$sample_id)
+meta_evo$stage <- ifelse(meta_evo$condition == tumor_type,tumor_type,
+                         ifelse(meta_evo$days < 280,"fetal",
+                                ifelse(meta_evo$days < 5840,"child","adult")))
+meta_evo$fetal <- ifelse(meta_evo$condition == tumor_type,tumor_type,
+                         ifelse(meta_evo$days < 280,"fetal","postbirth"))
+
+meta_evo$fetal_tissue <- ifelse(meta_evo$tissue == tumor_type,tumor_type,paste(meta_evo$tissue,meta_evo$fetal, sep = "_"))
+
+meta_atlas <-
+  data.frame(
+    sample_id = c(
+      pmc_tumor_meta$Biomaterial.Id,
+      sj_tumor_meta$sample_name,
+      atlas_meta$BioSample
+    ),
+    sex = tolower(c(pmc_tumor_meta$X03..Sex, sj_tumor_meta$attr_sex, rep("not available", atlas_size))),
+    type = c(
+      rep("RMS", pmc_size),
+      rep("RMS", sj_size),
+      atlas_meta$source_name
+    ),
+    batch = c(
+      rep("PMC", pmc_size),
+      rep("SJ", sj_size),
+      rep("ATLAS", atlas_size)
+    ),
+    condition = c(
+      pmc_tumor_meta$subtype,
+      sj_tumor_meta$attr_subtype_biomarkers,
+      rep("ATLAS", atlas_size)
+    )
+  )
+
+```
+
+```{r write metadata}
+write.table(meta_pt, file = paste(savedir,"metadata","metadata_pt.txt", sep = "/"), sep = ";",quote = F)
+write.table(meta_tumor, file = paste(savedir,"metadata",paste0("metadata_",tumor_type,".txt"), sep = "/"), sep = ";",quote = F)
+write.table(meta_gtex, file = paste(savedir,"metadata","metadata_gtex.txt", sep = "/"), sep = ";",quote = F)
+write.table(meta_evo, file = paste(savedir,"metadata","metadata_evo.txt", sep = "/"), sep = ";",quote = F)
+write.table(meta_atlas, file = paste(savedir,"metadata","metadata_R2_atlas.txt", sep = "/"), sep = ";",quote = F)
+
+```
+
+## DESeq2 Analyses
+
+## RMS subtype
+
+***Jip, 07-03-2023:*** rework subtypes to compare every sample within a subgroup vs all
+other subgroups. For example, all MYCN amp patients vs non-MYCN amp patients using
+a new column that is either 0 or 1 depending on the type.
+
+Compare molecular subtypes within RMS cohort to find fusion-specific genes
+
+```{R RMS condition, eval=F}
+meta_tumor$type <- factor(meta_tumor$type, levels = c("None","PAX3-FOXO1","PAX7-FOXO1","other","Not Available"))
+meta_tumor$condition <- factor(meta_tumor$condition, levels = c("ERMS","ARMS","RMS","SCRMS"))
+rownames(meta_tumor) <- meta_tumor$sample_id
+
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+all(colnames(txi_tumor$counts) == colnames(txi_tumor$length))
+
+meta_tumor <- meta_tumor[colnames(txi_tumor$counts),]
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+
+tumor_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumor,
+                                            colData = meta_tumor,
+                                            design = ~ batch + condition)
+
+# Keep samples with more than 10 counts in more than 3 samples
+keep <- rowSums(counts(tumor_dds) >= 10) >= 3
+tumor_dds <- tumor_dds[keep,]
+
+tumor_dds <- DESeq2::DESeq(tumor_dds)
+
+saveRDS(tumor_dds, file = paste(savedir,"results",paste0(tumor_type,"_DESEQ_subtype.RDS"), sep = "/"))
+
+resultsNames(tumor_dds)
+
+tumor_arms <- as.data.frame(results(tumor_dds, name = "condition_ARMS_vs_ERMS"))
+
+write.table(tumor_arms, file = paste(savedir, "results","RMS_alveolar_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+```
+
+Use newly annotated RMS metadata for analysis
+
+```{r RMS re-annot metadata, eval=F}
+
+meta_tumor <- read.delim(file = paste(savedir,"metadata/metadata_annot_RMS.txt",sep ="/"), sep = ";", header = T)
+
+rownames(meta_tumor) <- meta_tumor$sample_id
+
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+all(colnames(txi_tumor$counts) == colnames(txi_tumor$length))
+
+meta_tumor <- meta_tumor[colnames(txi_tumor$counts),]
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+
+tumor_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumor,
+                                            colData = meta_tumor,
+                                            design = ~ batch + condition)
+
+# Keep samples with more than 10 counts in more than 3 samples
+keep <- rowSums(counts(tumor_dds) >= 10) >= 3
+tumor_dds <- tumor_dds[keep,]
+
+tumor_dds <- DESeq2::DESeq(tumor_dds)
+
+saveRDS(tumor_dds, file = paste(savedir,"results",paste0(tumor_type,"_DESEQ_subtype.RDS"), sep = "/"))
+
+resultsNames(tumor_dds)
+
+tumor_arms <- as.data.frame(results(tumor_dds, contrast=c("condition","ARMS","ERMS")))
+
+write.table(tumor_arms, file = paste(savedir, "results","RMS_alveolar_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+
+```
+
+## GTEx
+
+Divide tissues in various groups, and combine the following tissues into one 
+single main group:
+
+- Adipose Tissue
+  - Adipose - Subcutaneous
+  - Adipose - Visceral (Omentum)
+- Blood Vessel
+  - Artery - Aorta
+  - Artery - Coronary
+  - Artery - Tibial
+- Brain
+  - Brain - Amygdala
+  - Brain - Anterior cingulate cortex (BA24)
+  - Brain - Caudate (basal ganglia)
+  - Brain - Cerebellar Hemisphere
+  - Brain - Cerebellum
+  - Brain - Cortex
+  - Brain - Frontal Cortex (BA9)
+  - Brain - Hippocampus
+  - Brain - Hypothalamus
+  - Brain - Nucleus accumbens (basal ganglia)
+  - Brain - Putamen (basal ganglia)
+  - Brain - Spinal cord (cervical c-1)
+  - Brain - Substantia nigra
+- female_reproductive
+  - Cervix Uteri
+    - Cervix - Ectocervix
+    - Cervix - Endocervix
+  - Uterus
+  - Vagina
+  - Ovary
+  - Fallopian Tube
+- digestive_system
+  - Esophagus
+    - Esophagus - Gastroesophageal Junction
+    - Esophagus - Mucosa
+    - Esophagus - Muscularis
+  - Colon
+    - Colon - Sigmoid
+    - Colon - Transverse
+  - Stomach
+  - Small Intestine
+- Heart
+  - Heart - Atrial Appendage
+  - Heart - Left Ventricle
+- Skin
+  - Cells - Cultured fibroblasts
+  - Skin - Not Sun Exposed (Suprapubic)
+  - Skin - Sun Exposed (Lower leg)
+- male_reproductive
+  - Prostate
+  - Testis
+
+Use this code in an sbatch script for creating the GTEx result files
+
+```{bash code, eval = F}
+#!/bin/bash
+#SBATCH --job-name gtex_results
+#SBATCH --mem=12G
+#SBATCH --time=12:00:00
+
+module load R/4.2.1
+
+/usr/bin/env Rscript -<<EOF
+library(magrittr)
+library(DESeq2)
+
+tumor_type="RMS"
+pmc_tumor_code=c("Alveolar rhabdomyosarcoma","Embryonal rhabdomyosarcoma, NOS","Spindle cell rhabdomyosarcoma","Rhabdomyosarcoma, NOS")
+sj_tumor_code=c("ARMS","ERMS","SCRMS","RMS")
+basedir="/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes"
+workdir=paste(basedir,"20221020_JD_quant_tumor_cohorts", sep = "/")
+savedir=paste(workdir, "analysis",tumor_type, sep = "/")
+
+meta_gtex=read.delim(paste(savedir,"metadata","metadata_gtex.txt", sep = "/"), sep = ";")
+txi <- readRDS(paste(savedir,"processed", "RMS_counts_full.RDS", sep = "/"))
+
+# Combine sample names per cohort
+samples_gtex <- meta_gtex$sample_id
+
+# RMS + GTEX
+txi_gtex <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% c(samples_gtex))],
+                counts = txi$counts[,which(colnames(txi$counts) %in% c(samples_gtex))],
+                length = txi$counts[,which(colnames(txi$length) %in% c(samples_gtex))],
+                countsFromAbundance = "scaledTPM")
+
+meta_gtex$type <- ifelse(meta_gtex$type %in% c("Cervix Uteri","Uterus","Vagina","Ovary","Fallopian Tube"),"female_reproductive",
+                         ifelse(meta_gtex$type %in% c("Esophagus","Colon","Small Intestine","Stomach"),"digestive_system",
+                                ifelse(meta_gtex$batch %in% c("SJ","PMC"),tumor_type,
+                                       ifelse(meta_gtex$type %in% c("Prostate","Testis"),"male_reproductive",meta_gtex$type))))
+meta_gtex$type <- factor(meta_gtex$type,levels = unique(meta_gtex$type))
+meta_gtex$sex <- factor(meta_gtex$sex, levels = c("male", "female","not available"))
+meta_gtex$batch <- factor(meta_gtex$batch, levels = c("PMC","SJ","GTEX"))
+meta_gtex$condition <- factor(meta_gtex$condition, levels = c("healthy",tumor_type))
+
+# Final check
+rownames(meta_gtex) <- meta_gtex$sample_id
+
+all(rownames(meta_gtex) == colnames(txi_gtex$counts))
+all(colnames(txi_gtex$counts) == colnames(txi_gtex$length))
+
+meta_gtex <- meta_gtex[colnames(txi_gtex$counts),]
+all(rownames(meta_gtex) == colnames(txi_gtex$counts))
+
+gtex_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_gtex,
+                                            colData = meta_gtex,
+                                            design = ~ type)
+
+# Keep samples with more than 10 counts in more than 10 samples
+keep <- rowSums(counts(gtex_dds) >= 10) >= 10
+gtex_dds <- gtex_dds[keep,]
+
+gtex_dds <- DESeq2::DESeq(gtex_dds)
+
+saveRDS(gtex_dds, file = paste(savedir,"results","GTEX_DESEQ_type.RDS", sep = "/"))
+
+resultsNames(gtex_dds)
+
+for (i in 2:length(levels(meta_gtex$type))) {
+  print(paste("writing results for",levels(meta_gtex$type)[i]))
+  res = results(gtex_dds, contrast = c("type",levels(meta_gtex$type)[1],levels(meta_gtex$type)[i]))
+  write.table(res, file = paste(savedir, "results",paste0("GTEX_res_",gsub(" ","_",levels(meta_gtex$type)[i]),".txt"), sep= "/"))
+}
+
+EOF
+
+
+```
+
+```{r GTEx - tissue comparisons, eval=F}
+
+meta_gtex$type <- ifelse(meta_gtex$type %in% c("Cervix Uteri","Uterus","Vagina","Ovary","Fallopian Tube"),"female_reproductive",
+                         ifelse(meta_gtex$type %in% c("Esophagus","Colon","Small Intestine","Stomach"),"digestive_system",
+                                ifelse(meta_gtex$batch %in% c("SJ","PMC"),"RMS",
+                                       ifelse(meta_gtex$type %in% c("Prostate","Testis"),"male_reproductive",meta_gtex$type))))
+meta_gtex$type <- factor(meta_gtex$type,levels = unique(meta_gtex$type))
+meta_gtex$sex <- factor(meta_gtex$sex, levels = c("male", "female","not available"))
+meta_gtex$batch <- factor(meta_gtex$batch, levels = c("PMC","SJ","GTEX"))
+meta_gtex$condition <- factor(meta_gtex$condition, levels = c("healthy","RMS"))
+
+
+# Final check
+rownames(meta_gtex) <- meta_gtex$sample_id
+
+all(rownames(meta_gtex) == colnames(txi_gtex$counts))
+all(colnames(txi_gtex$counts) == colnames(txi_gtex$length))
+
+meta_gtex <- meta_gtex[colnames(txi_gtex$counts),]
+all(rownames(meta_gtex) == colnames(txi_gtex$counts))
+
+gtex_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_gtex,
+                                            colData = meta_gtex,
+                                            design = ~ type)
+
+# Keep samples with more than 10 counts in more than 10 samples
+keep <- rowSums(counts(gtex_dds) >= 10) >= 10
+gtex_dds <- gtex_dds[keep,]
+
+gtex_dds <- DESeq2::DESeq(gtex_dds)
+
+saveRDS(gtex_dds, file = paste(savedir,"results","GTEX_DESEQ_type.RDS", sep = "/"))
+
+resultsNames(gtex_dds)
+
+for (i in 2:length(levels(meta_gtex$type))) {
+  print(paste("writing results for",levels(meta_gtex$type)[i]))
+  res = results(gtex_dds, contrast = c("type",levels(meta_gtex$type)[1],levels(meta_gtex$type)[i]))
+  write.table(res, file = paste(savedir, "results",paste0("GTEX_res_",gsub(" ","_",levels(meta_gtex$type)[i]),".txt"), sep= "/"))
+}
+
+```
+
+## EVO-DEVO
+
+Combine post-birth tissues as one group and fetal (pre-birth) tissues as one 
+group for comparison. We are more interested to see low expression in post-birth
+tissues.
+
+```{bash code, eval = F}
+#!/bin/bash
+#SBATCH --job-name gtex_results
+#SBATCH --mem=12G
+#SBATCH --time=12:00:00
+
+module load R/4.2.1
+
+/usr/bin/env Rscript -<<EOF
+suppressPackageStartupMessages({
+    library(magrittr)
+    library(DESeq2)
+})
+
+tumor_type="RMS"
+pmc_tumor_code=c("Alveolar rhabdomyosarcoma","Embryonal rhabdomyosarcoma, NOS","Spindle cell rhabdomyosarcoma","Rhabdomyosarcoma, NOS")
+sj_tumor_code=c("ARMS","ERMS","SCRMS","RMS")
+basedir="/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes"
+workdir=paste(basedir,"20221020_JD_quant_tumor_cohorts", sep = "/")
+savedir=paste(workdir, "analysis",tumor_type, sep = "/")
+
+meta_evo=read.delim(paste(savedir,"metadata","metadata_evo.txt", sep = "/"), sep = ";")
+txi <- readRDS(paste(savedir,"processed", "RMS_counts_full.RDS", sep = "/"))
+
+# Combine sample names per cohort
+samples_evo <- meta_evo$sample_id
+
+meta_evo$tissue <- factor(meta_evo$tissue, levels = c(tumor_type,"forebrain","hindbrain","heart","kidney","liver","ovary","testis"))
+meta_evo$batch <- factor(meta_evo$batch, levels = c("PMC","SJ","EVO"))
+meta_evo$stage <- factor(meta_evo$stage, levels = c("adult","child","fetal",tumor_type))
+meta_evo$fetal <- factor(meta_evo$fetal, levels = c("postbirth","fetal",tumor_type))
+meta_evo$fetal_tissue <- factor(meta_evo$fetal_tissue, levels = unique(meta_evo$fetal_tissue))
+
+# RMS + evo
+txi_evo <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% c(samples_evo))],
+                counts = txi$counts[,which(colnames(txi$counts) %in% c(samples_evo))],
+                length = txi$length[,which(colnames(txi$length) %in% c(samples_evo))],
+                countsFromAbundance = "scaledTPM")
+
+# Final check
+rownames(meta_evo) <- meta_evo$sample_id
+
+all(rownames(meta_evo) == colnames(txi_evo$counts))
+all(colnames(txi_evo$counts) == colnames(txi_evo$length))
+
+meta_evo <- meta_evo[colnames(txi_evo$counts),]
+all(rownames(meta_evo) == colnames(txi_evo$counts))
+
+evo_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_evo,
+                                            colData = meta_evo,
+                                            design = ~ fetal_tissue)
+
+# Keep samples with more than 10 counts in more than 3 samples
+keep <- rowSums(counts(evo_dds) >= 10) >= 10
+evo_dds <- evo_dds[keep,]
+
+evo_dds <- DESeq2::DESeq(evo_dds)
+
+saveRDS(evo_dds, file = paste(savedir,"results","EVO_DESEQ_tissue.RDS", sep = "/"))
+
+for (i in 2:(length(unique(meta_evo$fetal_tissue)))) {
+  print(paste("writing results for",unique(meta_evo$fetal_tissue)[i]))
+  res = results(evo_dds, contrast = c("fetal_tissue",unique(meta_evo$fetal_tissue)[1],unique(meta_evo$fetal_tissue)[i]))
+  write.table(res, file = paste(savedir, "results",paste0("EVO_res_",gsub(" ","_",unique(meta_evo$fetal_tissue)[i]),".txt"), sep= "/"))
+}
+
+EOF
+
+```
+
+```{r EVO - tissue, eval=F}
+
+evo_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_evo,
+                                            colData = meta_evo,
+                                            design = ~ fetal_tissue)
+
+# Keep samples with more than 10 counts in more than 3 samples
+keep <- rowSums(counts(evo_dds) >= 10) >= 10
+evo_dds <- evo_dds[keep,]
+
+evo_dds <- DESeq2::DESeq(evo_dds)
+
+saveRDS(evo_dds, file = paste(savedir,"results","EVO_DESEQ_tissue.RDS", sep = "/"))
+
+for (i in 1:(length(unique(meta_evo$fetal_tissue))-1)) {
+  print(paste("writing results for",unique(meta_evo$fetal_tissue)[i]))
+  res = results(evo_dds, contrast = c("fetal_tissue",unique(meta_evo$fetal_tissue)[14],unique(meta_evo$fetal_tissue)[i]))
+  write.table(res, file = paste(savedir, "results",paste0("EVO_res_",gsub(" ","_",unique(meta_evo$fetal_tissue)[i]),".txt"), sep= "/"))
+}
+
+
+```
+
+## R2 RNA atlas
+
+Divided samples into healthy tissue, cancer cell lines and cell lines for DE
+analysis.
+
+```{r R2 atlas, eval=F}
+
+meta_atlas$condition <- ifelse(grepl("cancer",meta_atlas$type),"cancer_line",
+                          ifelse(grepl("tissue",meta_atlas$type),"healthy_tissue",
+                                       ifelse(meta_atlas$condition == "RMS","RMS",
+                                              "cell_line")))
+meta_atlas$condition <- factor(meta_atlas$condition, levels = c("healthy_tissue","RMS","cancer_line","cell_line"))
+
+# Change the characters to factor to force a specific ordering
+meta_atlas$sex <- factor(meta_atlas$sex, levels = c("male", "female","not available"))
+# NBL - Brain - Cerebellum - Heart - Kidney -  Liver - Ovary - Testis
+meta_atlas$batch <- factor(meta_atlas$batch, levels = c("PMC","SJ","ATLAS"))
+ 
+rownames(meta_atlas) <- meta_atlas$sample_id
+
+all(rownames(meta_atlas) == colnames(txi_atlas$counts))
+all(colnames(txi_atlas$counts) == colnames(txi_atlas$length))
+
+meta_atlas <- meta_atlas[colnames(txi_atlas$counts),]
+all(rownames(meta_atlas) == colnames(txi_atlas$counts))
+
+atlas_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_atlas,
+                                            colData = meta_atlas,
+                                            design = ~ condition)
+
+# Keep samples with more than 10 counts in more than 10 samples
+keep <- rowSums(counts(atlas_dds) >= 10) >= 3
+atlas_dds <- atlas_dds[keep,]
+
+atlas_dds <- DESeq2::DESeq(atlas_dds)
+
+saveRDS(atlas_dds, file = paste(savedir,"results","ATLAS_DESEQ_condition.RDS", sep = "/"))
+
+resultsNames(atlas_dds)
+
+res_healthy_tissue <- results(atlas_dds, contrast = c("condition","RMS","healthy_tissue"))
+res_cell_line <- results(atlas_dds, contrast = c("condition","RMS","cell_line"))
+res_cancer <- results(atlas_dds, contrast = c("condition","RMS","cancer_line"))
+
+write.table(res_healthy_tissue, file = paste(savedir,"results","ATLAS_healthy_tissue_res.txt",sep = "/"), sep = ";",quote = F,row.names = T)
+write.table(res_cell_line, file = paste(savedir,"results","ATLAS_cell_line_res.txt",sep = "/"), sep = ";",quote = F,row.names = T)
+write.table(res_cancer, file = paste(savedir,"results","ATLAS_cancer_line_res.txt",sep = "/"), sep = ";",quote = F,row.names = T)
+
+
+```
+
+## Pediatric Tumors
+
+Compare NBL vs all tumor types for NBL-enriched genes
+
+***Jip, 07-03-2022:*** Requires some testing until all tumor samples are rerun 
+again.
+
+```{r Pediatric tumor comparison, eval=F}
+import_files <- grep(paste(samples_pt,collapse="|"),count_files,value = T)
+names(import_files) <- gsub("/quant.sf","",gsub(".*/NBL/","",import_files))
+txi_pt <- tximport::tximport(files = import_files, type = "salmon",
+                   tx2gene = tx2gene,
+                   dropInfReps = T)
+
+meta_pt <- read.delim(paste(savedir,"metadata","metadata_pt.txt", sep = "/"), sep = ";")
+
+meta_pt[is.na(meta_pt)] <- "None"
+
+rownames(meta_pt) <- meta_pt$sample_id
+
+all(rownames(meta_pt) == names(import_files))
+
+meta_pt <- meta_pt[names(import_files),]
+all(rownames(meta_pt) == names(import_files))
+
+meta_pt$sex <- factor(meta_pt$sex, levels = c("male", "female","not available"))
+# See tumor_cols for correct factor
+meta_pt$condition <- factor(meta_pt$condition, levels = c("RMS","EPN"))
+meta_pt$batch <- factor(meta_pt$batch, levels = c("PMC","SJ"))
+
+meta_pt$type <- gsub(";",":",meta_pt$type)
+
+write.table(meta_pt, file = paste(savedir, "metadata","metadata_pediatric_tumors.txt", sep = "/"), sep = ";", quote = F)
+
+pt_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_pt,
+                                            colData = meta_pt,
+                                            design = ~ condition)
+
+pt_dds <- DESeq2::DESeq(pt_dds)
+
+saveRDS(pt_dds, file = paste(savedir,"results","PT_DESEQ_tumor.RDS", sep = "/"))
+
+for (i in 2:length(levels(meta_pt$condition))) {
+  print(paste("writing results for",levels(meta_pt$condition)[i]))
+  res = results(pt_dds, contrast = c("condition",levels(meta_pt$condition)[1],levels(meta_pt$condition)[i]))
+  write.table(res, file = paste(savedir, "results",paste0("GTEX_res_",gsub(" ","_",levels(meta_pt$condition)[i]),".txt"), sep= "/"))
+}
+
+```
+
+## Create output matrices
+
+Create multiple output files:
+
+* LFC matrix that contains LFC for every comparison
+* Pval matrix that contains the adjusted P-value for every shared gene for every comparison
+* Output matrix that has gene information and whether the gene passed the various parameters
+
+## PT output
+
+Load pediatric tumor group LFC and adjusted P-value
+
+```{r PT load LFC, eval=F}
+pt_res_loc <- list.files(paste(savedir, "results",sep ="/"), full.names = T, pattern = "PT_res")
+
+## LFC
+pt_lfc <- lapply(pt_res_loc, function(x) {
+  df = read.table(file = x, sep = " ")
+  df = as.data.frame(df[,c("log2FoldChange")])
+  colnames(df) = gsub(".txt","",gsub("PT_res_","",basename(x)))
+  return(df)
+})
+
+pt_lfc <- do.call(cbind,pt_lfc)
+rownames(pt_lfc) <- rownames(read.table(pt_res_loc[[1]]))
+
+```
+
+```{r PT load Pval, eval=F}
+
+## P-value
+pt_pval <- lapply(pt_res_loc, function(x) {
+  df = read.table(file = x, sep = " ")
+  df = as.data.frame(df[,c("padj")])
+  colnames(df) = gsub(".txt","",gsub("PT_res_","",basename(x)))
+  return(df)
+})
+
+pt_pval <- do.call(cbind,pt_pval)
+rownames(pt_pval) <- rownames(read.table(pt_res_loc[[1]]))
+
+```
+
+## GTEx output
+
+Load GTEx tissue group LFC and adjusted P-value
+
+```{r GTEx load LFC, eval=F}
+gtex_res_loc <- list.files(paste(savedir, "results",sep ="/"), full.names = T, pattern = "GTEX_res")[1:22]
+
+## LFC
+gtex_lfc <- lapply(gtex_res_loc, function(x) {
+  df = read.table(file = x, sep = " ")
+  df = as.data.frame(df[,c("log2FoldChange")])
+  colnames(df) = gsub(".txt","",gsub("GTEX_res_","",basename(x)))
+  return(df)
+})
+
+gtex_lfc <- do.call(cbind,gtex_lfc)
+rownames(gtex_lfc) <- rownames(read.table(gtex_res_loc[[1]]))
+
+```
+
+```{r GTEx load Pval, eval=F}
+
+## P-value
+gtex_pval <- lapply(gtex_res_loc, function(x) {
+  df = read.table(file = x, sep = " ")
+  df = as.data.frame(df[,c("padj")])
+  colnames(df) = gsub(".txt","",gsub("GTEX_res_","",basename(x)))
+  return(df)
+})
+
+gtex_pval <- do.call(cbind,gtex_pval)
+rownames(gtex_pval) <- rownames(read.table(gtex_res_loc[[1]]))
+
+```
+
+## EVO-DEVO output
+
+Load EVO-DEVO tissue group LFC and adjusted P-value
+
+```{r EVO load LFC, eval=F}
+
+## LFC
+evo_res_loc <- list.files(paste(savedir, "results",sep ="/"), full.names = T, pattern = "EVO_res")
+
+evo_lfc <- lapply(evo_res_loc, function(x) {
+  df = read.table(file = x, sep = " ")
+  df = as.data.frame(df[,c("log2FoldChange")])
+  colnames(df) = gsub(".txt","",gsub("EVO_res_","",basename(x)))
+  return(df)
+})
+
+evo_lfc <- do.call(cbind,evo_lfc)
+rownames(evo_lfc) <- rownames(read.table(evo_res_loc[[1]]))
+
+```
+
+```{r EVO load Pval, eval=F}
+
+## P-value
+evo_pval <- lapply(evo_res_loc, function(x) {
+  df = read.table(file = x, sep = " ")
+  df = as.data.frame(df[,c("padj")])
+  colnames(df) = gsub(".txt","",gsub("EVO_res_","",basename(x)))
+  return(df)
+})
+
+evo_pval <- do.call(cbind,evo_pval)
+rownames(evo_pval) <- rownames(read.table(evo_res_loc[[1]]))
+
+```
+
+## R2 RNA Atlas output
+
+Load R2 RNA group LFC and adjusted P-value
+
+```{r R2 atlas load LFC & pval, eval=F}
+
+res_r2_cancer <- read.table(file = paste(savedir, "results","ATLAS_cancer_line_res.txt", sep = "/"), sep = ";")
+res_r2_cell <- read.table(file = paste(savedir, "results","ATLAS_cell_line_res.txt", sep = "/"), sep = ";")
+res_r2_healthy <- read.table(file = paste(savedir, "results","ATLAS_healthy_tissue_res.txt", sep = "/"), sep = ";")
+
+atlas_lfc <- data.frame(healthy_tissue = res_r2_healthy$log2FoldChange,
+                        cancer_line = res_r2_cancer$log2FoldChange,
+                        cell_line = res_r2_cell$log2FoldChange)
+rownames(atlas_lfc) <- rownames(res_r2_healthy)
+
+atlas_pval <- data.frame(healthy_tissue = res_r2_healthy$padj,
+                        cancer_line = res_r2_cancer$padj,
+                        cell_line = res_r2_cell$padj)
+rownames(atlas_pval) <- rownames(res_r2_healthy)
+
+```
+
+## LFC combination
+
+Find common genes in all sets and combine into one big DF
+
+```{r combine LFCs, eval=F}
+
+combined_rownames <- rownames(gtex_lfc)[which(rownames(gtex_lfc) %in% rownames(evo_lfc) &
+                                                rownames(gtex_lfc) %in% rownames(atlas_lfc))]
+
+mat_novel <- cbind(gtex_lfc[which(rownames(gtex_lfc) %in% combined_rownames),],
+                   evo_lfc[which(rownames(evo_lfc) %in% combined_rownames),],
+                   atlas_lfc[which(rownames(atlas_lfc) %in% combined_rownames),]
+                   )
+mat_canon_lfc <- mat_novel[which(grepl("ENSG",rownames(mat_novel))),]
+mat_novel_lfc <- mat_novel[which(grepl("MSTRG",rownames(mat_novel))),]
+
+write.table(mat_novel, file = paste(savedir,"results",paste0(tumor_type,"_genes_lfc_matrix.txt"),sep = "/"), sep = ";", quote = F)
+
+```
+
+## Padj combination
+
+Idem for the Padj matrix
+
+```{r combine P-values, eval=F}
+
+combined_rownames <- rownames(gtex_pval)[which(rownames(gtex_pval) %in% rownames(evo_pval) &
+                                                rownames(gtex_pval) %in% rownames(atlas_pval))]
+
+mat_novel <- cbind(gtex_pval[which(rownames(gtex_pval) %in% combined_rownames),],
+                   evo_pval[which(rownames(evo_pval) %in% combined_rownames),],
+                   atlas_pval[which(rownames(atlas_pval) %in% combined_rownames),]
+                   )
+
+mat_novel[is.na(mat_novel)] <- 1
+
+write.table(mat_novel, file = paste(savedir,"results",paste0(tumor_type,"_genes_pval_matrix.txt"),sep = "/"), sep = ";", quote = F)
+
+mat_canon_pval <- mat_novel[which(grepl("ENSG",rownames(mat_novel))),]
+mat_novel_pval <- mat_novel[which(grepl("MSTRG",rownames(mat_novel))),]
+
+```
+
+## Gene enrichment filtering
+
+Decide on the following parameters:
+* mean LFC > 3
+* minimum LFC > 1
+* P-adjusted < 0.001
+
+All LFC & P-values should be in adult tissue (not testis)
+
+Annotate canonical genes with gene biotype and cell surface prediction
+
+***Jip 07-03-2023:*** Annotate and/or remove non poly-A genes
+
+## Novel gene filtering
+
+```{r novel NBL-specificity, eval=F}
+pass_lfc <- ifelse(rowMins(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,36)])) > 1 &
+                     rowMeans(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,36)])) > 3,T,F)
+pass_pval <- ifelse(rowMeans(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,36)])) < 0.001 &
+                     rowMaxs(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,36)])) < 0.001 ,T,F)
+
+pass_novel <- data.frame(gene_id = rownames(mat_novel_lfc),
+                         pass_lfc = pass_lfc,
+                         pass_pval = pass_pval,
+                         mean_lfc = rowMeans(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,36)]),
+                         min_lfc = rowMin(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,36)])),
+                         max_pval = rowMaxs(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,36)])),
+                         pass = ifelse(pass_lfc == T & pass_pval == T,T,F)
+                         )
+
+pass_novel <- pass_novel[
+  order( -pass_novel$mean_lfc ),
+]
+
+pass_novel <- dplyr::left_join(pass_novel, gtf_df[,c("gene_id","seqnames","start","end","strand","class_code")])
+pass_novel <- pass_novel[!(duplicated(pass_novel)),]
+
+write.table(pass_novel, file = paste(savedir,"results",paste0(tumor_type,"_novel_enriched_matrix.txt"),sep = "/"), sep = ";", quote = F)
+```
+
+## Canonical gene filtering
+
+```{r canon RMS-specificity, eval=F}
+# load data that contains additional gene metadata
+
+# Surfaceome
+surface_xl <- readxl::read_xlsx("/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221014_JD_T_ALL/analysis/surfaceome_expression/pone.0121314.s003.xlsx")
+surface_xl$`UniProt Cell surface` <- ifelse(is.na(surface_xl$`UniProt Cell surface`) ,F,T)
+
+gene_name_id <- as.data.frame(subset(gtf, type == "gene"))[,c("gene_name","gene_id","gene_biotype")]
+
+gene_metadata <- dplyr::left_join(gene_name_id, 
+                                 surface_xl, 
+                                 by = c("gene_name" = "ENTREZ gene symbol"))
+gene_metadata$tm_domain <- ifelse(grepl("1",gene_metadata$`CSPA category`),
+                                  "high_confidence",
+                                  ifelse(
+                                    grepl("2",gene_metadata$`CSPA category`),
+                                    "putative",
+                                    "unspecific"))
+
+selected_genes <- unique(canon_df[which(canon_df$gene_id %in% polya_feats$gene_id &
+                                   !(canon_df$gene_id %in% mono_transcripts$gene_id)),]$gene_id)
+
+```
+
+```{r}
+
+canon_lfc <- ifelse(rowMins(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,36)])) > 1 &
+                     rowMeans(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,36)])) > 3,T,F)
+canon_pval <- ifelse(rowMeans(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,36)])) < 0.0001 &
+                     rowMaxs(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,36)])) < 0.0001 ,T,F)
+
+pass_canon <- data.frame(gene_id = rownames(mat_canon_lfc),
+                         pass_lfc = canon_lfc,
+                         pass_pval = canon_pval,
+                         mean_lfc = rowMeans(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,36)]),
+                         min_lfc = rowMin(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,36)])),
+                         max_pval = rowMaxs(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,36)])),
+                         pass = ifelse(canon_lfc == T & canon_pval == T,T,F),
+                         selected = ifelse(rownames(mat_canon_lfc) %in% selected_genes, T,F),
+                         domain = ifelse(rownames(mat_canon_lfc) %in% gene_metadata[which(gene_metadata$tm_domain ==
+                                                                                       "putative"),]$gene_id,
+                                         "putative",
+                                         ifelse(rownames(mat_canon_lfc) %in% 
+                                               gene_metadata[which(gene_metadata$tm_domain == "unspecific"),]$gene_id,"unspecific",ifelse(rownames(mat_canon_lfc) %in% 
+                                               gene_metadata[which(gene_metadata$tm_domain == "high_confidence"),]$gene_id,"high_confidence","unspecific"))))
+
+pass_canon <- dplyr::left_join(pass_canon, gene_name_id)
+
+pass_canon <- pass_canon[
+  order( -pass_canon$mean_lfc ),
+]
+
+tm_tumor_spec <- pass_canon[which(pass_canon$pass == T &
+                                  pass_canon$domain %in% c("putative","high_confidence")),]$gene_name
+
+
+write.table(pass_canon, file = paste(savedir,"results",paste0(tumor_type,"_canon_enriched_matrix.txt"),sep = "/"), sep = ";", quote = F)
+
+```
+
+```{r final results}
+
+table(pass_canon$pass_lfc == T &
+        pass_canon$selected == T)
+
+table(pass_canon$pass_lfc == T &
+        pass_canon$pass_pval == T &
+        pass_canon$selected == T)
+
+table(pass_canon[which(pass_canon$pass_lfc == T &
+        pass_canon$pass_pval == T &
+        pass_canon$selected == T),]$gene_biotype)
+
+table(pass_novel$pass == T)
+
+```
+
+## Test RMS clustering loading in only the tumor samples in txi
+
+```{r}
+
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+tumor_files <- count_files[which(names(count_files) %in% meta_tumor$sample_id)]
+
+# Using TX2gene immediately
+
+txi_tumor <- tximport::tximport(files = tumor_files, type = "salmon", tx2gene = tx2gene, dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+tumor_dds <- DESeq2::DESeqDataSetFromTximport(txi_tumor)
+
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+all(colnames(txi_tumor$counts) == colnames(txi_tumor$length))
+
+meta_tumor <- meta_tumor[colnames(txi_tumor$counts),]
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+
+tumor_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumor,
+                                            colData = meta_tumor,
+                                            design = ~ condition)
+
+tumor_vsd <- DESeq2::vst(tumor_dds)
+
+DESeq2::plotPCA(tumor_vsd, intgroup = c("condition"))
+
+# Using TX2GENE afterwards
+
+txi_tumor_tx <- tximport::tximport(files = tumor_files, txOut = T, type = "salmon", dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+txi_tumor_gene <- tximport::summarizeToGene(txi_tumor_tx, tx2gene = tx2gene)
+
+tumor_gene_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumor_gene,
+                                            colData = meta_tumor,
+                                            design = ~ condition)
+
+tumor_gene_vsd <- DESeq2::vst(tumor_gene_dds)
+tumor_gene_vsd_novel <- tumor_gene_vsd[ grepl("MSTRG",rownames(tumor_gene_vsd)) , ]
+tumor_gene_vsd_canon <- tumor_gene_vsd[ grepl("ENSG",rownames(tumor_gene_vsd)) , ]
+
+DESeq2::plotPCA(tumor_gene_vsd_novel, intgroup = c("type"))
+DESeq2::plotPCA(tumor_gene_vsd_canon, intgroup = c("condition"))
+
+ggpubr::ggarrange(DESeq2::plotPCA(tumor_vsd, intgroup = c("condition")),DESeq2::plotPCA(tumor_gene_vsd, intgroup = c("condition")))
+
+```
+

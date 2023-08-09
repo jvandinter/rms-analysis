@@ -1,0 +1,1080 @@
+---
+title: "RMS figures"
+author: "JD"
+date: '2023-05-02'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(magrittr)
+library(ggplot2)
+library(DESeq2)
+
+plotdir="/hpc/pmc_vanheesch/projects/Jip/RMS_neoantigens/plots_poster"
+```
+
+```{r parameters}
+basedir="/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/"
+workdir=paste(basedir,"20221020_JD_quant_tumor_cohorts", sep = "/")
+savedir=paste(workdir, "analysis","RMS", sep = "/")
+
+tumor_type = "RMS"
+tumor_col = "#F9ECCE"
+# Colour scheme
+heatmap_cols <- colorRampPalette(rev(RColorBrewer::brewer.pal(n = 5, name = "RdYlBu")))(100)
+  #colorspace::diverging_hcl(n = 100, palette = "Lisbon")
+# male - female - NA
+sex_cols <- c("#BB3754FF","#0D0887FF","#999999")
+# PMC - SJ - GTEx - EVO - ATLAS
+batch_cols <- c("#FE9A2F","#B71238","#6EA3D1","#7AD151FF","#1675B6")
+  # embryonal - alveolar - scRMS
+type_cols <- c("#D7182F","#19886A","#564D96")
+  # None - NA - pax3-foxo - pax7-foxo - other
+subtype_cols <- c("#EB7667","white","#3CA6C0","#2A3768","#667198")
+  # RMS - Brain - Cerebellum - Heart - Kidney - Liver - Kidney - Ovary - Testis
+tissue_evo_cols <- c("#3698C7","#32CCFF","#AE1319","#CB992B","#339900","#CC3399","#FF6600")
+  # "RMS"                 "Adipose Tissue"      "Adrenal Gland"       "Blood Vessel"        "Bladder"             "Brain"              
+  # "Breast"              "Skin"                "Blood"               "female_reproductive" "digestive_system"    "Heart"              
+  # "Kidney"              "Liver"               "Lung"                "Salivary Gland"      "Muscle"              "Nerve"              
+  # "Pancreas"            "Pituitary"           "Spleen"              "Thyroid"             "male_reproductive"
+  tissue_gtex_cols <- c("Adipose Tissue"="#FECE98",
+                        "Adrenal Gland"="#98EEA0",
+                        "Blood Vessel"="#FE7F90",
+                        "Bladder"="#CF7F89",
+                        "Brain"="#F4F69F",
+                        "Breast"="#46CEC9",
+                        "Skin"="#7A76F8",
+                        "Blood"="#FD19B7",
+                        "Cervix Uteri"="#E1CEEA",
+                        "Colon"="#E1C6A9",
+                        "Esophagus"="#E1C6A9",
+                        "Fallopian Tube"="#FFE0E2",
+                        "Heart"="#6B1995",
+                        "Kidney"="#49FFC3",
+                        "Liver"="#A9BB73",
+                        "Lung"="#9BFF52",
+                        "Salivary Gland"="#9ABC8D",
+                        "Muscle"="#A9A7FA",
+                        "Nerve"="#F2CE3E",
+                        "Ovary"="#FFCCFD",
+                        "Pancreas"="#C6A293",
+                        "Pituitary"="#D0FFCB",
+                        "Small Intestine"="#A4A491",
+                        "Spleen"="#B4BEA6",
+                        "Stomach"="#FFEBCB",
+                        "Thyroid"="#82AE8A",
+                        "Uterus"="#FEA3FC",
+                        "Vagina"="#FE9BC6",
+                        "Prostate"="#ECECEC",
+                        "Testis"="#CFCFCF")
+  # RMS - healthy tissue - cancer cell line - cell line 
+  tissue_r2_cols <- c("#1400F5","#F50021","#F300ED")
+  # canonical - U class - I class - X class - Y class - O class - K class
+  tx_cols <- RColorBrewer::brewer.pal(7, "Pastel2")
+  #alternative U - I - X - Y - O - K
+  tx_alt <- c("u"="#F2B854","i"="#9BCAE3","x"="#EBA14E","y"="#E68848","o"="#2D677F","k"="#499DB7")
+  # NBL - EPN - EWS - RMS - MBL - AML - T-ALL - B-ALL - ATRT - WT -- DO NOT CHANGE
+  tumor_cols <- c("NBL"="#000194","EPN"="#B458A6","EWS"="#F7A29F","RMS"="#F9ECCE",
+                  "MBL"="#D2AE33","AML"="#CC2441","T-ALL"="#A2DAD8","B-ALL"="#CDD8D7",
+                  "ATRT"="#E07729","WT"="#A9D547")
+
+# Label size
+
+```
+
+## Transcriptome GTF stats
+
+```{r TXome GTF statistics}
+
+gtf_df <- as.data.frame(rtracklayer::import.gff("/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/RMS_full_novel_filtered_corrected.gtf"))
+
+# Parse some of the biotypes in their own group
+biotype_data <- gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
+  dplyr::filter(gene_biotype %in% c("stringtie","protein_coding","lncRNA","scaRNA","vault_RNA","scRNA","ribozyme","misc_RNA","miRNA")) %>%
+  dplyr::mutate(gene_biotype = ifelse(gene_biotype %in% c("miRNA","ribozyme","scaRNA","scRNA","sRNA","vault_RNA","misc_RNA"),"Misc RNA",
+                                      ifelse(
+                                      gene_biotype == "stringtie","Novel",
+                                      ifelse(gene_biotype == "protein_coding","Protein Coding",
+                                        gene_biotype
+                                    )))
+  ) %>%
+  dplyr::distinct()
+
+biotype_data <- biotype_data[!(duplicated(biotype_data$gene_id)),]
+
+
+biotype_data$gene_biotype <- factor(biotype_data$gene_biotype, levels = c("Protein Coding","lncRNA","Misc RNA","Novel"))
+
+ggplot(biotype_data, aes(x = gene_biotype, y = after_stat(count), fill = gene_biotype)) +
+  geom_bar() +
+  geom_text(stat='count', aes(label=after_stat(count)), size = 6, vjust = -.3, size = 3.5) +
+  scale_fill_manual(values = viridis::magma(8, begin = 0.1)) +
+  theme_classic() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  theme(legend.position = "none") +
+  theme(axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.y=element_blank(),legend.position="none")
+
+ggsave(filename = paste(plotdir,"RMS_TX_GTF.pdf",sep="/"),
+       height = 8,
+       width = 4)
+
+```
+
+```{r TXome enriched GTF statistics}
+mat_novel <- read.delim(file = paste(savedir,"results",paste0(tumor_type,"_novel_enriched_matrix.txt"),sep = "/"), sep = ";")
+mat_canon <- read.delim(file = paste(savedir,"results",paste0(tumor_type,"_canon_enriched_matrix.txt"),sep = "/"), sep = ";")
+
+enriched_genes <- c(mat_novel[which(mat_novel$pass == T),]$gene_id,
+                    mat_canon[which(mat_canon$pass == T),]$gene_id)
+
+# Parse some of the biotypes in their own group
+biotype_data <- gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
+  dplyr::mutate(gene_biotype = ifelse(grepl("pseudogene",gene_biotype),"pseudogene",
+                                    ifelse(
+                                      grepl("IG",gene_biotype),"Immunoglobulin",
+                                      ifelse(
+                                      grepl("TR",gene_biotype),"TCR",
+                                      ifelse(
+                                      gene_biotype %in% c("ribozyme","scRNA","sRNA","vault_RNA"),"misc_RNA",
+                                      ifelse(
+                                      gene_biotype == "Mt_rRNA","rRNA",
+                                      ifelse(
+                                        !(is.na(class_code)), 
+                                        class_code, 
+                                        gene_biotype
+                                    ))))))
+  ) %>% 
+  dplyr::filter(gene_id %in% enriched_genes) %>%
+  dplyr::distinct()
+
+biotype_data <- biotype_data[!(duplicated(biotype_data$gene_id)),]
+
+table(biotype_data$gene_biotype)
+
+ggplot(biotype_data, aes(x = gene_biotype, y = after_stat(count), fill = gene_biotype)) +
+  geom_bar() +
+  geom_text(stat='count', aes(label=after_stat(count)), vjust = -.3, size = 3.5) +
+  theme_classic(base_size=12) +
+  scale_fill_manual(values = viridis::magma(17, begin = 0.1)) +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme(legend.position = "none") +
+  theme(axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.y=element_blank(),legend.position="none")
+
+
+```
+
+## Rank novel gene expression
+
+Check expression of novel genes (counts > 10) per sample and rank them from high to low.
+
+```{r}
+# Load required data
+pmc_meta <- read.delim("/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221020_JD_quant_tumor_cohorts/analysis/metadata/20220921_PMC_metadata.txt")
+rms_meta <- read.delim(file = paste(savedir,"metadata/metadata_RMS.txt",sep ="/"), sep = ";", header = T)
+ribo_meta <- read.delim("/hpc/pmc_vanheesch/projects/Jip/riboseq/20230502_JD_RMS_corrected/analysis/RMS_used_riboseq_samples_metadata.txt", sep =";", header = T)
+
+dds <- readRDS(file = paste(savedir,"results","RMS_DESEQ_subtype.RDS", sep = "/"))
+
+novel_enriched <- read.delim(file = paste(savedir,"results","RMS_novel_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T)
+
+canon_enriched <- read.delim(file = paste(savedir,"results","RMS_canon_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T)
+
+# Select MSTRG genes
+norm <- as.data.frame(DESeq2::counts(dds, normalized = T)) %>%
+  tibble::rownames_to_column('gene') %>%
+  dplyr::filter(grepl("MSTRG",gene)) %>%
+  tibble::column_to_rownames('gene')
+
+# Select MSTRG enriched
+novel_enriched <- as.data.frame(DESeq2::counts(dds, normalized = T)) %>%
+  tibble::rownames_to_column('gene') %>%
+  dplyr::filter(gene %in% novel_enriched$gene_id) %>%
+  tibble::column_to_rownames('gene')
+
+# Select ref enriched
+canon_enriched <- as.data.frame(DESeq2::counts(dds, normalized = T)) %>%
+  tibble::rownames_to_column('gene') %>%
+  dplyr::filter(gene %in% canon_enriched$gene_id) %>%
+  tibble::column_to_rownames('gene')
+
+# Create DF that shows novel expressed genes per sample
+patient_novel_expression <- data.frame(sample_id = colnames(norm),
+                                       novel = colSums(norm > 10),
+                                       novel_enriched = colSums(novel_enriched > 10),
+                                       canon_enriched = colSums(canon_enriched > 10)
+                                       )
+
+# Annotate patient IDs
+patient_novel_expression <- dplyr::left_join(patient_novel_expression,
+                                             pmc_meta[,c("Biomaterial.Id","Subject.Id","Biosource.Id")], pmc_meta,
+                by = c("sample_id" = "Biomaterial.Id")) %>%
+  dplyr::left_join(rms_meta, by = "sample_id")
+
+patient_novel_expression$Subject.Id <- ifelse(patient_novel_expression$batch == "SJ", gsub("-.*","",patient_novel_expression$sample_id),patient_novel_expression$Subject.Id)
+
+# Annotate RIBO-seq presence
+patient_novel_expression$ribo <- ifelse(patient_novel_expression$Subject.Id %in% ribo_meta$Subject.Id, T, F)
+patient_novel_expression[is.na(patient_novel_expression)] <- "Not Available"
+
+# write table
+
+write.table(patient_novel_expression , paste(savedir,"results", "RMS_patient_gene_expression.txt", sep ="/"), quote =F, row.names = F, sep = ";")
+
+```
+
+```{r plot gene expression per group:batch}
+
+p1 <- ggplot(patient_novel_expression, aes(x = ribo, y = novel, col = batch)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+    theme_classic()
+
+p2 <- ggplot(patient_novel_expression, aes(x = ribo, y = novel_enriched, col = batch)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+    theme_classic()
+
+p3 <- ggplot(patient_novel_expression, aes(x = ribo, y = canon_enriched, col = batch)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+    theme_classic()
+
+ggpubr::ggarrange(p1,p2,p3, ncol = 3, common.legend = TRUE)
+
+```
+
+```{r plot gene expression per PMC:condition}
+
+p1 <- ggplot(patient_novel_expression[which(patient_novel_expression$batch == "PMC"),], 
+             aes(x = ribo, y = novel, col = condition)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+p2 <- ggplot(patient_novel_expression[which(patient_novel_expression$batch == "PMC"),], 
+             aes(x = ribo, y = novel_enriched, col = condition)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+p3 <- ggplot(patient_novel_expression[which(patient_novel_expression$batch == "PMC"),], 
+             aes(x = ribo, y = canon_enriched, col = condition)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+ggpubr::ggarrange(p1,p2,p3, ncol = 3, common.legend = TRUE)
+
+```
+
+```{r plot gene expression per group:condition}
+
+p1 <- ggplot(patient_novel_expression, aes(x = ribo, y = novel, col = condition)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+p2 <- ggplot(patient_novel_expression, aes(x = ribo, y = novel_enriched, col = condition)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+p3 <- ggplot(patient_novel_expression, aes(x = ribo, y = canon_enriched, col = condition)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+ggpubr::ggarrange(p1,p2,p3, ncol = 3, common.legend = TRUE)
+
+```
+
+```{r plot gene expression per group:type}
+
+p1 <- ggplot(patient_novel_expression, aes(x = ribo, y = novel, col = type)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+p2 <- ggplot(patient_novel_expression, aes(x = ribo, y = novel_enriched, col = type)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+p3 <- ggplot(patient_novel_expression, aes(x = ribo, y = canon_enriched, col = type)) +
+  geom_boxplot(outlier.shape = NA) +
+    theme_classic()
+
+ggpubr::ggarrange(p1,p2,p3, ncol = 3, common.legend = TRUE)
+
+```
+
+```{r PCA}
+
+rms_meta <- read.delim(file = paste(savedir,"metadata/metadata_RMS.txt",sep ="/"), sep = ";", header = T)
+ribo_meta <- read.delim("/hpc/pmc_vanheesch/projects/Jip/riboseq/20230502_JD_RMS_corrected/analysis/RMS_used_riboseq_samples_metadata.txt", sep =";", header = T)
+
+dds <- readRDS(file = paste(savedir,"results","RMS_DESEQ_subtype.RDS", sep = "/"))
+
+novel_enriched <- read.delim(file = paste(savedir,"results","RMS_novel_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T)
+
+canon_enriched <- read.delim(file = paste(savedir,"results","RMS_canon_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T)
+
+vsd <- DESeq2::vst(dds, blind = F)
+
+DESeq2::plotPCA(vsd, intgroup = c("condition","batch"))
+
+tumor_gene_vsd_novel <- vsd[ grepl("MSTRG",rownames(vsd)) , ]
+tumor_gene_vsd_canon <- vsd[ grepl("ENSG",rownames(vsd)) , ]
+
+plot_pca <- DESeq2::plotPCA(tumor_gene_vsd_novel, intgroup = c("condition"),returnData =T)
+
+ggplot(plot_pca, aes(x = PC1, y = PC2, col = condition, label=name)) +
+  geom_point(size =0.1) +
+  geom_text(hjust=0, vjust=0, size = 2)
+
+ggsave(filename = "rms_pca_names.pdf",
+       device = "pdf",
+       height = 6,
+       width = 6)
+
+arms_vec <- c("SJRHB031210-D1","SJRHB013759-D1","SJRHB013757-D2")
+meta_tumor_ann <- meta_tumor
+meta_tumor_ann$condition <- ifelse(meta_tumor_ann$condition == "RMS",
+                                   ifelse(meta_tumor_ann$sample_id %in% 
+                                            arms_vec,
+                                          "ARMS",
+                                          "ERMS"),
+                                   as.character(meta_tumor_ann$condition))
+meta_tumor_ann$condition <- factor(meta_tumor_ann$condition, levels = c("ERMS","SCRMS","ARMS"))
+
+write.table(meta_tumor_ann,file = paste(savedir,"metadata/metadata_annot_RMS.txt",sep ="/"), sep = ";", quote=F, row.names=T)
+
+```
+
+## GTEx enriched heatmap
+
+```{r load data}
+gtex_dds <- readRDS(file = paste(savedir, "results","GTEX_DESEQ_type.RDS", sep = "/"))
+meta_gtex <- read.delim(file = paste(savedir, "metadata","metadata_gtex.txt",sep ="/"), sep = ";")
+meta_rms_annot <- read.delim(file = paste(savedir, "metadata","metadata_annot_RMS.txt",sep ="/"), sep = ";")
+mat_novel <- read.delim(file = paste(savedir,"results",paste0(tumor_type,"_novel_enriched_matrix.txt"),sep = "/"), sep = ";")
+gtex_vsd <- DESeq2::vst(gtex_dds, blind = F)
+```
+
+```{r create barebones plot}
+
+plotname <- "RMS_GTEX_DE_novel_RMS_spec_barebones"
+
+heatmap_matrix <- t(scale(t(assay(gtex_vsd))))
+heatmap_matrix <- heatmap_matrix[which(rownames(heatmap_matrix) %in% mat_novel[which(mat_novel$pass == T),]$gene_id),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+tissue_types <- unique(meta_gtex$type)
+
+hm_list <- list()
+ha_list <- list()
+
+hm_arms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_rms_annot[which(meta_rms_annot$condition == "ARMS"),]$sample_id)]
+hm_erms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_rms_annot[which(meta_rms_annot$condition == "ERMS"),]$sample_id)]
+
+for (i in 2:length(tissue_types)) {
+  hm = heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_gtex[which(meta_gtex$type == tissue_types[i]),]$sample_id)]
+  hm_mean = rowMeans(hm)
+  hm_list[[tissue_types[i]]] = hm_mean
+}
+
+hm_gtex <- do.call(cbind, hm_list)
+
+
+breaks <- seq(-2, 2, length.out = 100)
+
+chm_arms <- ComplexHeatmap::Heatmap(matrix = hm_arms,
+                          # Hide names
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_erms <- ComplexHeatmap::Heatmap(matrix = hm_erms,
+                          # Hide names
+                          cluster_columns = F,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_gtex <- ComplexHeatmap::Heatmap(matrix = hm_gtex,
+                          # Hide names
+                          cluster_columns = F,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+svg(file = paste(savedir,"heatmaps",paste0(plotname,".svg"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_arms+chm_erms+chm_gtex ,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(1, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+pdf(file = paste(savedir,"heatmaps",paste0(plotname,".pdf"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_arms+chm_erms+chm_gtex,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(1, "mm"),
+                     annotation_legend_side="right",
+                     legend_grouping = "original"
+                     )
+
+dev.off()
+
+```
+
+```{r create plot}
+
+plotname <- "RMS_GTEX_DE_novel_RMS_spec"
+
+heatmap_matrix <- t(scale(t(assay(gtex_vsd))))
+heatmap_matrix <- heatmap_matrix[which(rownames(heatmap_matrix) %in% mat_novel[which(mat_novel$pass == T),]$gene_id),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+tissue_types <- unique(meta_gtex$type)
+
+hm_list <- list()
+ha_list <- list()
+
+hm_tumor <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_gtex[which(meta_gtex$type == tissue_types[1]),]$sample_id)]
+
+for (i in 2:length(tissue_types)) {
+  hm = heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_gtex[which(meta_gtex$type == tissue_types[i]),]$sample_id)]
+  hm_mean = rowMeans(hm)
+  hm_list[[tissue_types[i]]] = hm_mean
+}
+
+hm_gtex <- do.call(cbind, hm_list)
+
+# Create column annotation metadata
+annot_col <- data.frame(condition = c(meta_rms_annot[which(meta_rms_annot$sample_id %in% colnames(hm_tumor)),]$condition,
+                                      colnames(hm_gtex)))
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+rownames(annot_col) <- c(colnames(hm_tumor),colnames(hm_gtex))
+annot_col$batch <- ifelse(grepl("^SJ",rownames(annot_col)),"SJ",
+                          ifelse(grepl("^PM",rownames(annot_col)),"PMC","GTEx")
+)
+
+# This is a bit more complex. anno_cols is a named list, which means that a certain value is connected to another value. In this case, "Male" is connected to "skyblue". Check out anno_cols for yourself
+anno_cols <- list(condition = setNames(c(type_cols,tissue_gtex_cols),unique(annot_col$condition)),
+                  batch = setNames(batch_cols[1:3],unique(annot_col$batch)))
+
+ha_tumor <- ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col[which(row.names(annot_col) %in% colnames(hm_tumor)),],
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+
+ha_gtex <- ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col[which(row.names(annot_col) %in% colnames(hm_gtex)),],
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  show_legend = F,
+  simple_anno_size = unit(0.3, "cm")
+)
+
+# Get all the rownames in a variable
+heatmap_genes <- rownames(heatmap_matrix)
+
+# Create row annotation dataframe that matches the class of the gene ID located in our
+annot_row <-
+  data.frame(class = mat_novel[match(heatmap_genes, mat_novel[, "gene_id"]), ]$class_code
+             )
+
+# same as column annotation, the DF requires row names
+rownames(annot_row) <- heatmap_genes
+
+# Force the order of levels we want
+annot_row$class <-
+  factor(annot_row$class,
+         levels = c("u", "x", "y","i"))
+
+# Connect the values of the row annotation to the colours
+row_cols <-
+  list(class = setNames(tx_cols[1:length(levels(annot_row$class))],
+                        levels(annot_row$class)))
+
+ha_row <-
+  ComplexHeatmap::HeatmapAnnotation(
+    df = annot_row,
+    show_annotation_name = F,
+    which = "row",
+    col = row_cols
+  )
+
+breaks <- seq(-2, 2, length.out = 100)
+
+chm_tumor <- ComplexHeatmap::Heatmap(matrix = hm_tumor,
+                          # Hide names
+                          top_annotation = ha_tumor,
+                          left_annotation = ha_row,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  split = annot_row$class,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_gtex <- ComplexHeatmap::Heatmap(matrix = hm_gtex,
+                          # Hide names
+                          top_annotation = ha_gtex,
+                          cluster_columns = F,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  split = annot_row$class,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+gtex_legend <-
+ComplexHeatmap::Legend(labels = annot_col[which(row.names(annot_col) %in% colnames(hm_gtex)),]$condition, 
+                       legend_gp = grid::gpar(fill = tissue_gtex_cols),
+                       title = "tissue_type", 
+                       ncol = 2,
+                       title_position = "topcenter")
+
+
+svg(file = paste(savedir,"heatmaps",paste0(plotname,".svg"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_tumor+chm_gtex +gtex_legend ,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(0.5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+pdf(file = paste(savedir,"heatmaps",paste0(plotname,".pdf"), sep = "/"), width = 14, height = 4.5)
+
+ComplexHeatmap::draw(chm_tumor+chm_gtex,
+                     annotation_legend_list = list(gtex_legend),
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(0.5, "mm"),
+                     annotation_legend_side="right",
+                     legend_grouping = "original"
+                     )
+
+dev.off()
+
+
+```
+
+## all counts boxplot
+
+```{r plot functions}
+
+plot_gene <- function(dds, gene,tissue_cols,intgroup) {
+  count_plot = plotCounts(dds = dds,gene = gene,intgroup = intgroup,normalized=T,returnData = T)
+  intgroup = sym(intgroup)
+  ggplot(data = count_plot,mapping = aes(x = !!intgroup, y = count, col = !!intgroup)) +
+    geom_boxplot() +
+    ggbeeswarm::geom_quasirandom() + 
+    scale_color_manual(values = tissue_cols) +
+    scale_x_discrete(guide = guide_axis(angle = 45)) +
+    labs(title = gene, y = "norm count") +
+    theme_classic() +
+    theme(legend.position = "none")
+
+}
+
+plot_evo_gene <- function(dds, gene,tissue_cols) {
+  count_plot <- plotCounts(dds = dds,gene = gene,intgroup = c("fetal","tissue"),normalized=T,returnData = T)
+  
+  ggplot(data = count_plot,mapping = aes(x = tissue, y = count, col = tissue)) +
+    geom_boxplot() +
+    ggbeeswarm::geom_quasirandom() + 
+    scale_color_manual(values = tissue_cols) +
+    labs(title = gene, y = "norm count") +
+    scale_x_discrete(guide = guide_axis(angle = 45)) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    facet_grid(~fetal,scales = "free_x")
+
+}
+
+create_gene_count_overview <- function(gene_name,savedir) {
+  p_evo = plot_evo_gene(dds = evo_dds,
+                      gene = gene_name,
+                      tissue_cols = c(tumor_col,tissue_evo_cols))
+   p_nbl_type = plot_gene(dds = tumor_dds,
+                      gene = gene_name,
+                      tissue_cols = type_cols,
+                      intgroup = "condition")
+  p_gtex = plot_gene(dds = gtex_dds,
+                      gene = gene_name,
+                      tissue_cols = c(tumor_col,tissue_gtex_cols),
+                      intgroup = "type")
+  p_atlas = plot_gene(dds = atlas_dds,
+                      gene = gene_name,
+                      tissue_cols = c(tumor_col,tissue_r2_cols),
+                      intgroup = "condition")
+  p_ribo = plot_gene(dds = tumor_dds,
+                      gene = gene_name,
+                      tissue_cols = viridis::cividis(n = 2, alpha = 0.85),
+                      intgroup = "seq")
+  ggsave(filename = paste(savedir,paste0(gene_name,"_counts.pdf"), sep = "/"),
+       plot = ggpubr::ggarrange(p_nbl_type,p_ribo,p_evo,p_gtex,p_atlas,nrow=1),
+       height = 6,
+       width = 16)
+
+}
+
+   p_nbl_type = plot_gene(dds = tumor_dds,
+                      gene = gene_name,
+                      tissue_cols = type_cols,
+                      intgroup = "condition")
+   p_ribo = plot_gene(dds = tumor_dds,
+                      gene = gene_name,
+                      tissue_cols = viridis::cividis(n = 2, alpha = 0.85),
+                      intgroup = "seq")
+   ggsave(filename = paste(savedir,paste0(gene_name,"_counts.pdf"), sep = "/"),
+       plot = ggpubr::ggarrange(p_nbl_type,p_ribo,nrow=1),
+       height = 3,
+       width = 8)
+
+
+```
+
+```{r load data}
+# Metadata
+mat_novel <- read.delim(file = paste(savedir,"results",paste0(tumor_type,"_novel_enriched_matrix.txt"),sep = "/"), sep = ";")
+rms_fp_results <- read.delim(file = paste(savedir,"results",paste0(tumor_type,"_alveolar_res.txt"),sep = "/"), sep = ";") %>%
+  dplyr::filter(rownames(.) %in% mat_novel[which(mat_novel$pass == T),]$gene_id)
+rms_ribo <- read.delim("/hpc/pmc_vanheesch/projects/Jip/riboseq/20230502_JD_RMS_corrected/analysis/RMS_used_riboseq_samples_metadata.txt",sep=";")
+
+#RDS
+evo_dds <- readRDS(file = paste(savedir, "results","EVO_DESEQ_tissue.RDS", sep = "/"))
+gtex_dds <- readRDS(file = paste(savedir, "results","GTEX_DESEQ_type.RDS", sep = "/"))
+gtex_dds <- 
+atlas_dds <- readRDS(file = paste(savedir, "results","ATLAS_DESEQ_condition.RDS", sep = "/"))
+tumor_dds <- readRDS(file = paste(savedir, "results","RMS_DESEQ_subtype.RDS", sep = "/"))
+tumor_dds$seq = ifelse(colnames(tumor_dds) %in% rms_ribo$Biomaterial.Id,T,F)
+
+```
+
+```{r}
+
+meta_gtex$type <-
+  ifelse(
+    meta_gtex$type %in% c("Cervix Uteri", "Uterus", "Vagina", "Ovary", "Fallopian Tube"),
+    "female_reproductive",
+    ifelse(
+      meta_gtex$type %in% c("Esophagus", "Colon", "Small Intestine", "Stomach"),
+      "digestive_system",
+      ifelse(
+        meta_gtex$batch %in% c("SJ", "PMC"),
+        tumor_type,
+        ifelse(
+          meta_gtex$type %in% c("Prostate", "Testis"),
+          "male_reproductive",
+          meta_gtex$type
+        )
+      )
+    )
+  )
+meta_gtex$type <-
+  factor(meta_gtex$type, levels = unique(meta_gtex$type))
+meta_gtex$sex <-
+  factor(meta_gtex$sex, levels = c("male", "female", "not available"))
+meta_gtex$batch <-
+  factor(meta_gtex$batch, levels = c("PMC", "SJ", "GTEX"))
+
+# Final check
+rownames(meta_gtex) <- meta_gtex$sample_id
+
+write.table()
+
+
+# to plot
+gene_name = "MSTRG.52649"
+create_gene_count_overview(gene_name,savedir)
+
+
+```
+
+
+## ORF category plot
+
+```{r}
+
+rms_orfs <- read.delim("/hpc/pmc_vanheesch/projects/Jip/riboseq/20230502_JD_RMS_corrected/analysis/master_ORF_df.txt",
+                       sep = ";")
+
+gtf_df <- as.data.frame(rtracklayer::import.gff("/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/RMS_full_novel_filtered_corrected.gtf"))
+
+rms_orfs$ORF_type <- ifelse(rms_orfs$gene_id %in% gtf_df[which(gtf_df$gene_biotype == "lncRNA"),]$gene_id,"lncRNA",rms_orfs$ORF_type)
+rms_orfs <- rms_orfs[which(rms_orfs$ORF_type %in% c("ORF_annotated", 
+                                                         "uORF", "overl_uORF", "nested_ORF", 
+                                                         "overl_dORF", "dORF", "lncRNA", "novel")),]
+rms_orfs$ORF_type <- factor(rms_orfs$ORF_type,levels = rev(c("ORF_annotated", 
+                                                         "uORF", "overl_uORF", "nested_ORF", 
+                                                         "overl_dORF", "dORF", "lncRNA", "novel")))
+
+plot_col <- rev(c(c(RColorBrewer::brewer.pal(12, "Set3"))[c(1,7:12)], 
+                  c(RColorBrewer::brewer.pal(12, "Paired"))[12]))
+
+ggplot(data = rms_orfs,aes(y= ORF_type, x = after_stat(count/sum(count)), fill = ORF_type)) +
+  geom_bar() +
+  geom_text(stat='count', aes(label=after_stat(count)), hjust = -0.2, size = 4) +
+  scale_x_continuous(expand = c(0,0), limits = c(0,0.5)) +
+  scale_fill_manual(values = plot_col) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line.x = element_blank(),
+        text = element_text(family = "Arial"),
+        axis.text = element_text(size = 16)
+        )
+
+ggsave("RMS_ORF_categories.svg", device = "svg", path = plotdir, width = 1800, height = 1200, units = "px")
+
+```
+
+## tumor and tissue heatmap
+
+```{r load data}
+
+mat_novel <- read.delim(file = paste(savedir,"results",paste0(tumor_type,"_novel_enriched_matrix.txt"),sep = "/"), sep = ";")
+mat_canon <- read.delim(file = paste(savedir,"results",paste0(tumor_type,"_canon_enriched_matrix.txt"),sep = "/"), sep = ";")
+meta_tumor <- read.delim(file = paste(savedir,"metadata/metadata_annot_RMS.txt",sep ="/"), sep = ";", header = T)
+rownames(meta_tumor) <- meta_tumor$sample_id
+
+basedir="/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes"
+gtf=paste(basedir,"/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/",
+          paste0(tumor_type,"_full_novel_filtered_corrected.gtf"), sep = "/")
+txdb=paste(basedir,"/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/",
+           paste0(tumor_type,"_full"),
+           paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+
+txdb <- AnnotationDbi::loadDb(txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+gtf <- rtracklayer::import.gff(gtf)
+gtf_df <- as.data.frame(gtf) %>%
+  subset(type == "transcript")
+gtf_gene_df <- as.data.frame(gtf) %>%
+  subset(type == "gene")
+
+count_files <- list.files(paste(workdir,paste0("data/processed/salmon_quant/",
+                                               tumor_type),
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+all(file.exists(count_files))
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+
+samples_tumoroid <- c(pmc_tumor_samples,sj_tumor_samples,sample_names[which(sample_names %in% c(98:129))])
+
+count_files_tumoroid <- count_files[which(names(count_files) %in% samples_tumoroid)]
+
+txi <- tximport::tximport(count_files_tumoroid, type = "salmon", tx2gene = tx2gene, dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+meta <- data.frame(sample_id = 98:129,
+                            condition = c(rep("ARMS",16),rep("ERMS",16)),
+                            batch = "tumoroid") %>%
+  dplyr::filter(sample_id %in% names(count_files_tumoroid)) %>%
+  rbind(meta_tumor[,c("sample_id","condition","batch")])
+rownames(meta) <- meta$sample_id
+
+all(rownames(meta) == colnames(txi$counts))
+all(colnames(txi$counts) == colnames(txi$length))
+
+meta <- meta[colnames(txi$counts),]
+all(rownames(meta) == colnames(txi$counts))
+
+tumor_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi,
+                                            colData = meta,
+                                            design = ~ batch + condition)
+
+tumor_vsd <- DESeq2::vst(tumor_dds, blind = F)
+
+tumor_dds <- DESeq2::DESeq(tumor_dds)
+
+saveRDS(tumor_dds, file = paste(savedir,"results",paste0(tumor_type,"_DESEQ_tumoroid_subtype.RDS"), sep = "/"))
+
+resultsNames(tumor_dds)
+
+tumor_arms <- as.data.frame(results(tumor_dds, contrast=c("condition","ARMS","ERMS")))
+
+write.table(tumor_arms, file = paste(savedir, "results","RMS_alveolar_tumoroid_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+
+
+```
+
+```{r heatmap 191 genes}
+
+plotname <- "RMS_tumoroid_DE_novel_RMS_spec_barebones"
+
+heatmap_matrix <- t(scale(t(assay(tumor_vsd))))
+heatmap_matrix <- heatmap_matrix[which(rownames(heatmap_matrix) %in% mat_novel[which(mat_novel$pass == T),]$gene_id),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+oid_arms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ARMS" &
+                                                                             meta$batch == "tumoroid"),]$sample_id)]
+oid_erms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ERMS" &
+                                                                             meta$batch == "tumoroid"),]$sample_id)]
+tis_arms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ARMS" &
+                                                                             meta$batch %in% c("SJ","PMC")),]$sample_id)]
+tis_erms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ERMS" &
+                                                                             meta$batch %in% c("SJ","PMC")),]$sample_id)]
+
+breaks <- seq(-2, 2, length.out = 100)
+
+chm_tis_arms <- ComplexHeatmap::Heatmap(matrix = tis_arms,
+                          # Hide names
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_tis_erms <- ComplexHeatmap::Heatmap(matrix = tis_erms,
+                          # Hide names
+                          cluster_columns = F,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_oid_erms <- ComplexHeatmap::Heatmap(matrix = oid_erms,
+                          # Hide names
+                          cluster_columns = F,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_oid_arms <- ComplexHeatmap::Heatmap(matrix = oid_arms,
+                          # Hide names
+                          cluster_columns = F,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+svg(file = paste(savedir,"heatmaps",paste0(plotname,".svg"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_tis_arms+chm_tis_erms + chm_oid_arms+chm_oid_erms ,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(1, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+pdf(file = paste(savedir,"heatmaps",paste0(plotname,".pdf"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_tis_arms+chm_tis_erms + chm_oid_arms+chm_oid_erms ,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(1, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+```
+
+```{r heatmap fewer genes}
+
+aRMS_enriched <- rownames(tumor_arms[which(tumor_arms$log2FoldChange > 2 & tumor_arms$padj < 0.05),])
+rms_enriched <- mat_novel[which(mat_novel$pass == T),]$gene_id
+
+picked <- aRMS_enriched[aRMS_enriched %in% rms_enriched]
+
+plotname <- "RMS_tumoroid_picked_novel_RMS"
+
+heatmap_matrix <- t(scale(t(assay(tumor_vsd))))
+heatmap_matrix <- heatmap_matrix[which(rownames(heatmap_matrix) %in% picked),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+oid_arms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ARMS" &
+                                                                             meta$batch == "tumoroid"),]$sample_id)]
+oid_erms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ERMS" &
+                                                                             meta$batch == "tumoroid"),]$sample_id)]
+tis_arms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ARMS" &
+                                                                             meta$batch %in% c("SJ","PMC")),]$sample_id)]
+tis_erms <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ERMS" &
+                                                                             meta$batch %in% c("SJ","PMC")),]$sample_id)]
+
+breaks <- seq(-2, 2, length.out = 100)
+
+chm_tis_arms <- ComplexHeatmap::Heatmap(matrix = tis_arms,
+                          # Hide names
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_tis_erms <- ComplexHeatmap::Heatmap(matrix = tis_erms,
+                          # Hide names
+                          cluster_columns = T,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_oid_erms <- ComplexHeatmap::Heatmap(matrix = oid_erms,
+                          # Hide names
+                          cluster_columns = T,
+  show_row_names = T,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_oid_arms <- ComplexHeatmap::Heatmap(matrix = oid_arms,
+                          # Hide names
+                          cluster_columns = T,
+  show_row_names = F,
+  show_row_dend = T,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+svg(file = paste(savedir,"heatmaps",paste0(plotname,".svg"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_tis_arms+chm_tis_erms + chm_oid_arms+chm_oid_erms ,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(1, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+pdf(file = paste(savedir,"heatmaps",paste0(plotname,".pdf"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_tis_arms+chm_tis_erms + chm_oid_arms+chm_oid_erms ,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(1, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+```
+
+## tumoroids counts example
+
+```{r}
+# MSTRG.47314 MSTRG.59325 MSTRG.31367
+gene = "MSTRG.31367"
+
+tumor_counts <- DESeq2::plotCounts(dds = tumor_dds, intgroup = c("batch","condition"), gene = gene, returnData = T) %>%
+  dplyr::mutate(batch = ifelse(batch %in% c("PMC","SJ"),"Patient","Tumoroid"))
+
+ggplot(data = tumor_counts, aes(x = condition, y = count, col = condition)) +
+  geom_boxplot(outlier.shape = NA) +
+    ggbeeswarm::geom_quasirandom() + 
+    scale_color_manual(values = type_cols) +
+    labs(title = gene, y = "norm count") +
+    scale_x_discrete(guide = guide_axis(angle = 45)) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    facet_grid(~batch,scales = "free_x")
+
+ggsave(filename = paste(savedir,paste0(gene,"_counts.pdf"), sep = "/"),
+       height = 6,
+       width = 4)
+  
+```
+
+## novel enriched heatmap
+
+```{r}
+tumor_dds <- readRDS(file = paste(savedir,"results",paste0(tumor_type,"_DESEQ_subtype.RDS"), sep = "/"))
+tumor_meta <- read.delim(file = paste(savedir,"metadata/metadata_annot_RMS.txt",sep ="/"), sep = ";", header = T)
+
+```
+
+## enriched gene count
+
+
+
+```

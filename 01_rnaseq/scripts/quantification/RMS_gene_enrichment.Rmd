@@ -1,0 +1,478 @@
+---
+title: "RMS gene enrichment"
+author: "JD"
+date: "2023-07-10"
+output: html_document
+---
+
+# Introduction
+
+This RMD contains the scripts to analyze the DEseq2 output
+
+```{r libraries}
+library(magrittr)
+library(ggplot2)
+library(DESeq2)
+```
+
+```{r parameters}
+wd = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq"
+savedir = paste(wd,"results/quantification",sep="/")
+metadata_dir = paste(wd,"documentation",sep="/")
+tumor_type = "RMS"
+
+```
+
+
+## RMS Patient PCA
+
+```{r load data}
+txi <- readRDS(Sys.readlink(paste(savedir, "RMS_counts_full.RDS", sep = "/")))
+meta_tumor <- read.delim(file = paste(wd,"documentation","metadata_annot_RMS.txt",sep="/"),
+                         sep = ";")
+fusion_tumor <- read.delim(file = paste(wd,"results","starfusion","fusion_annotation.txt", sep ="/")) %>%
+  dplyr::filter(sample_id %in% meta_tumor$sample_id)
+
+meta_tumor$new_condition <- ifelse(meta_tumor$sample_id %in% fusion_tumor[which(fusion_tumor$condition_check =="mismatch"),]$sample_id, "ERMS",meta_tumor$new_condition)
+
+# NBL cohort
+txi_tumor <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% meta_tumor$sample_id)],
+                counts = txi$counts[,which(colnames(txi$counts) %in% meta_tumor$sample_id)],
+                length = txi$counts[,which(colnames(txi$length) %in% meta_tumor$sample_id)],
+                countsFromAbundance = "scaledTPM")
+
+```
+
+```{r perform DEseq2}
+meta_tumor$condition <- factor(meta_tumor$condition, levels = c("ERMS","ARMS","SCRMS"))
+rownames(meta_tumor) <- meta_tumor$sample_id
+
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+all(colnames(txi_tumor$counts) == colnames(txi_tumor$length))
+
+meta_tumor <- meta_tumor[colnames(txi_tumor$counts),]
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+
+tumor_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumor,
+                                            colData = meta_tumor,
+                                            design = ~ batch + condition)
+
+# Keep samples with more than 10 counts in more than 3 samples
+keep <- rowSums(DESeq2::counts(tumor_dds) >= 10) >= 3
+tumor_dds <- tumor_dds[keep,]
+
+tumor_dds <- DESeq2::DESeq(tumor_dds)
+
+saveRDS(tumor_dds, file = paste(savedir,paste0(tumor_type,"_DESEQ_subtype.RDS"), sep = "/"))
+
+DESeq2::resultsNames(tumor_dds)
+
+tumor_arms <- as.data.frame(DESeq2::results(tumor_dds, name = "condition_ARMS_vs_ERMS"))
+
+write.table(tumor_arms, file = paste(savedir,"RMS_FP_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+```
+
+```{r create PCA}
+tumor_vsd <- DESeq2::vst(tumor_dds, blind = F)
+
+canon_genes <- assay(tumor_vsd)[which(grepl("ENSG",rownames(assay(tumor_vsd)))),]
+novel_genes <- assay(tumor_vsd)[which(grepl("MSTRG",rownames(assay(tumor_vsd)))),]
+
+# novel
+rv <- rowVars(novel_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(novel_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_pca_novel.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # canon
+rv <- rowVars(canon_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(canon_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + 
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_pca_canon.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+     # Combined
+    
+    rv <- rowVars(assay(tumor_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(assay(tumor_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_pca_all.pdf",sep="/"),
+       height = 6,
+       width = 6)
+```
+
+
+
+## RMS Tumoroid PCA
+
+```{r load data}
+count_files <- list.files(paste(wd,"analysis","quantification","salmon_quant",
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+
+gtf = paste(wd,"analysis","rnaseq_pipeline","customannotation",
+          paste0(tumor_type,"_full_novel_filtered_corrected.gtf"), sep = "/")
+
+txdb = paste(wd,"analysis","rnaseq_pipeline","customannotation",
+           paste0(tumor_type,"_full"),
+           paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+
+txdb <- AnnotationDbi::loadDb(txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+gtf <- rtracklayer::import.gff(gtf)
+gtf_df <- as.data.frame(gtf) %>%
+  subset(type == "transcript")
+gtf_gene_df <- as.data.frame(gtf) %>%
+  subset(type == "gene")
+
+count_files_tumoroid <- count_files[which(names(count_files) %in% c(98:129))]
+
+txi_tumoroid <- tximport::tximport(count_files_tumoroid, type = "salmon", tx2gene = tx2gene, dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+meta_tumoroid <- data.frame(sample_id = 98:129,
+                            condition = c(rep("ARMS",16),rep("ERMS",16)),
+                            batch = "tumoroid") %>%
+  dplyr::filter(sample_id %in% names(count_files_tumoroid))
+rownames(meta_tumoroid) <- meta_tumoroid$sample_id
+
+meta_tumoroid$condition <- factor(meta_tumoroid$condition, levels = c("ERMS","ARMS"))
+
+```
+
+```{r perform DEseq2}
+
+all(rownames(meta_tumoroid) == colnames(txi_tumoroid$counts))
+all(colnames(txi_tumoroid$counts) == colnames(txi_tumoroid$length))
+
+meta_tumoroid <- meta_tumoroid[colnames(txi_tumoroid$counts),]
+all(rownames(meta_tumoroid) == colnames(txi_tumoroid$counts))
+
+tumoroid_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumoroid,
+                                            colData = meta_tumoroid,
+                                            design = ~ condition)
+
+tumoroid_vsd <- DESeq2::vst(tumoroid_dds, blind = F)
+
+keep <- rowSums(counts(tumoroid_dds) >= 10) >= 2
+tumoroid_dds <- tumoroid_dds[keep,]
+
+tumoroid_dds <- DESeq2::DESeq(tumoroid_dds)
+
+saveRDS(tumoroid_dds, file = paste(savedir,paste0(tumor_type,"_DESEQ_tumoroid_subtype.RDS"), sep = "/"))
+
+resultsNames(tumoroid_dds)
+
+tumor_arms <- as.data.frame(results(tumor_dds, contrast=c("condition","ARMS","ERMS")))
+
+write.table(tumor_arms, file = paste(savedir,"RMS_FP_tumoroid_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+```
+
+```{r create PCA}
+
+canon_genes <- assay(tumoroid_vsd)[which(grepl("ENSG",rownames(assay(tumoroid_vsd)))),]
+novel_genes <- assay(tumoroid_vsd)[which(grepl("MSTRG",rownames(assay(tumoroid_vsd)))),]
+
+# novel
+rv <- rowVars(novel_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(novel_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 8, alpha = 0.25) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_tumoroids_pca_novel.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # canon
+rv <- rowVars(canon_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(canon_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 8, alpha = 0.25) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed(ratio = 1) +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_tumoroids_pca_canon.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # Combined
+    
+    rv <- rowVars(assay(tumoroid_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(assay(tumoroid_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 8, alpha = 0.25) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_tumoroids_pca_all.pdf",sep="/"),
+       height = 6,
+       width = 6)
+```
+
+## RMS combined PCA
+
+```{r load data}
+count_files <- list.files(paste(wd,"analysis","quantification","salmon_quant",
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+
+gtf = paste(wd,"analysis","rnaseq_pipeline","customannotation",
+          paste0(tumor_type,"_full_novel_filtered_corrected.gtf"), sep = "/")
+
+txdb = paste(wd,"analysis","rnaseq_pipeline","customannotation",
+           paste0(tumor_type,"_full"),
+           paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+
+txdb <- AnnotationDbi::loadDb(txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+gtf <- rtracklayer::import.gff(gtf)
+gtf_df <- as.data.frame(gtf) %>%
+  subset(type == "transcript")
+gtf_gene_df <- as.data.frame(gtf) %>%
+  subset(type == "gene")
+
+meta_tumor <- read.delim(file = paste(wd,"documentation","metadata_annot_RMS.txt",sep="/"),
+                         sep = ";")
+fusion_tumor <- read.delim(file = paste(wd,"results","starfusion","fusion_annotation.txt", sep ="/")) %>%
+  dplyr::filter(sample_id %in% meta_tumor$sample_id)
+
+meta_tumor$new_condition <- ifelse(meta_tumor$sample_id %in% fusion_tumor[which(fusion_tumor$condition_check =="mismatch"),]$sample_id, "ERMS",meta_tumor$new_condition)
+
+count_files_combined <- count_files[which(names(count_files) %in% c(98:129,meta_tumor$sample_id))]
+
+txi_combined <- tximport::tximport(count_files_combined, type = "salmon", tx2gene = tx2gene, dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+meta_combined <- data.frame(sample_id = as.character(98:129),
+                            new_condition = c(rep("ARMS",16),rep("ERMS",16)),
+                            batch = "tumoroid") %>%
+  dplyr::filter(sample_id %in% names(count_files_combined)) %>%
+  rbind(meta_tumor[,c("sample_id","batch","new_condition")])
+
+rownames(meta_combined) <- meta_combined$sample_id
+
+meta_combined$condition <- factor(meta_combined$new_condition, levels = c("ERMS","ARMS","SCRMS"))
+meta_combined$batch <- factor(meta_combined$batch, levels = c("PMC","SJ","tumoroid"))
+
+```
+
+```{r perform DEseq2}
+
+all(rownames(meta_combined) == colnames(txi_combined$counts))
+all(colnames(txi_combined$counts) == colnames(txi_combined$length))
+
+meta_combined <- meta_combined[colnames(txi_combined$counts),]
+all(rownames(meta_combined) == colnames(txi_combined$counts))
+
+combined_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_combined,
+                                            colData = meta_combined,
+                                            design = ~ batch + condition)
+
+combined_vsd <- DESeq2::vst(combined_dds, blind = F)
+
+keep <- rowSums(counts(combined_dds) >= 10) >= 2
+combined_dds <- combined_dds[keep,]
+
+combined_dds <- DESeq2::DESeq(combined_dds)
+
+saveRDS(combined_dds, file = paste(savedir,paste0(tumor_type,"_DESEQ_combined_subtype.RDS"), sep = "/"))
+
+resultsNames(combined_dds)
+
+combined_arms <- as.data.frame(results(combined_dds, contrast=c("condition","ARMS","ERMS")))
+
+write.table(combined_arms, file = paste(savedir,"RMS_FP_combined_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+```
+
+```{r create PCA}
+
+canon_genes <- assay(combined_vsd)[which(grepl("ENSG",rownames(assay(combined_vsd)))),]
+novel_genes <- assay(combined_vsd)[which(grepl("MSTRG",rownames(assay(combined_vsd)))),]
+
+# novel
+rv <- rowVars(novel_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(novel_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed(ratio = 1) +
+      theme_classic()
+
+    ggsave(filename = paste(savedir,"RMS_combined_pca_novel.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # canon
+rv <- rowVars(canon_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(canon_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed(ratio = 1) +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_combined_pca_canon.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # Combined
+    
+    rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_combined_pca_all.pdf",sep="/"),
+       height = 6,
+       width = 6)
+```
+
+# RMS-enriched genes
+
+```{r}
+
+```
+
+# FP-RMS specific genes
+
+```{r }
+
+```
+

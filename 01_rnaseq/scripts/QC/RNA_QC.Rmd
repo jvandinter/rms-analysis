@@ -1,0 +1,120 @@
+---
+title: "RMS RNA QC"
+author: "JD"
+date: "2023-07-05"
+output: html_document
+---
+
+This notebook contains the code to plot RNA-seq & Ribo-seq QC figures for the RMS
+cohort
+
+```{r parameters}
+workdir = "/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221007_JD_RMS_ext"
+savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/results/QC"
+
+library(ggplot2)
+library(magrittr)
+```
+
+## TRIMgalore QC
+
+```{r trimgalore stats}
+trim_stats <- read.delim(paste0(workdir, "/data/processed/RMS_full_genes_multiqc_data/multiqc_cutadapt.txt")) %>%
+  dplyr::mutate(Sample = sub("_R[0-9]+.*", "", Sample)
+                ) %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::summarize(r_written = sum(r_written), 
+            bp_processed = sum(bp_processed),
+            quality_trimmed = sum(quality_trimmed),
+            bp_written = sum(bp_written))
+
+trim_plot <- trim_stats %>%
+  dplyr::select(c("Sample","r_written","bp_processed","quality_trimmed","bp_written")) %>%
+  tidyr::pivot_longer(cols = c(3,4)) %>%
+  dplyr::mutate(Sample = factor(Sample, levels = trim_stats[order(trim_stats$r_written),]$Sample),
+                source = ifelse(Sample %in% c(98:129),
+                                "Organoid",
+                                ifelse(grepl("PMCR", 
+                                             x = Sample),
+                                       "PMC",
+                                       "St_Jude")))
+
+ggplot(data = trim_plot, aes(x = Sample, y = value, fill = name)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = rev(ggsci::pal_jco("default")(2)),
+                    labels = c("BP processed", "BP trimmed")) +
+  theme_classic() +
+  labs(x = "Samples", 
+       y = "Total RNAseq reads", 
+       fill = "Read type") +
+  facet_grid(~source, scales="free", space="free_x") +
+  theme(axis.text.x = element_blank())
+
+ggsave(filename = "RMS_cutadapt_trimming_stats.pdf",
+       device = "pdf",
+       path = savedir
+       )
+
+```
+
+## STAR QC
+
+```{r STAR stats}
+
+star_stats <- read.delim(paste0(workdir, "/data/processed/RMS_full_genes_multiqc_data/multiqc_star.txt")) %>%
+  dplyr::filter(!(grepl("STARpass1", Sample))) %>%
+  dplyr::mutate(source = ifelse(Sample %in% c(98:129),
+                                "Organoid",
+                                ifelse(grepl("PMCR", 
+                                             x = Sample),
+                                       "PMC",
+                                       "St_Jude")))
+star_perc_stats <- star_stats %>%
+  dplyr::select(c("Sample","source",
+                  "uniquely_mapped_percent","multimapped_percent",
+                  "unmapped_tooshort_percent","unmapped_other_percent")) %>%
+  tidyr::pivot_longer(cols = c(3:6)) %>%
+  dplyr::mutate(Sample = factor(Sample, levels = star_stats[order(star_stats$uniquely_mapped_percent),]$Sample),
+                name = factor(name,levels = c("unmapped_other_percent","unmapped_tooshort_percent",
+                                              "multimapped_percent","uniquely_mapped_percent")))
+
+star_stats <- star_stats %>%
+  dplyr::select(c("Sample", "source" ,
+                  "uniquely_mapped", "multimapped", 
+                  "unmapped_tooshort", "unmapped_other")) %>%
+  tidyr::pivot_longer(cols = c(3:6)) %>%
+  dplyr::mutate(Sample = factor(Sample, levels = star_stats[order(star_stats$uniquely_mapped),]$Sample),
+                name = factor(name,levels = c("unmapped_other","unmapped_tooshort",
+                                              "multimapped","uniquely_mapped")))
+
+ggplot(data = star_stats, aes(x = Sample, y = value, fill = name)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = rev(ggsci::pal_jco("default")(4))) +
+  theme_classic() +
+  labs(x = "Samples", 
+       y = "Total RNAseq reads", 
+       fill = "Read type") +
+  facet_grid(~source, scales="free", space="free_x") +
+  theme(axis.text.x = element_blank())
+
+ggsave(filename = "RMS_STAR_mapping_stats.pdf",
+       device = "pdf",
+       path = savedir
+       )
+
+ggplot(data = star_perc_stats, aes(x = Sample, y = value, fill = name)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = rev(ggsci::pal_jco("default")(4))) +
+  theme_classic() +
+  labs(x = "Samples", 
+       y = "Total RNAseq reads", 
+       fill = "Read type") +
+  facet_grid(~source, scales="free", space="free_x") +
+  theme(axis.text.x = element_blank())
+
+ggsave(filename = "RMS_STAR_percentage_mapping_stats.pdf",
+       device = "pdf",
+       path = savedir
+       )
+
+```

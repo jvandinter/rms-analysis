@@ -1,0 +1,51 @@
+---
+title: "Transcriptome Characterisation"
+author: "JD"
+date: "2023-07-06"
+output: html_document
+---
+
+```{r parameters}
+wd = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis"
+savedir = paste(wd,"01_rnaseq/results/rnaseq_pipeline", sep = "/")
+library(magrittr)
+library(ggplot2)
+```
+
+```{r}
+
+gtf_df <- as.data.frame(rtracklayer::import.gff(paste(wd,"/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.gtf", sep = "/")))
+
+# Parse some of the biotypes in their own group
+biotype_data <- gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
+  dplyr::filter(gene_biotype %in% c("stringtie","protein_coding","lncRNA","scaRNA","vault_RNA","scRNA","ribozyme","misc_RNA","miRNA")) %>%
+  dplyr::mutate(col_fill = ifelse(gene_biotype %in% c("miRNA","ribozyme","scaRNA","scRNA","sRNA","vault_RNA","misc_RNA"),"Misc RNA",
+                                      ifelse(
+                                      !(is.na(class_code)),class_code,
+                                      ifelse(gene_biotype == "protein_coding","Protein Coding",
+                                        gene_biotype
+                                    )))
+  ) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(gene_biotype = ifelse(col_fill %in% c("i","u","x","y","k","o"),"novel",col_fill))
+
+biotype_data <- biotype_data[!(duplicated(biotype_data$gene_id)),]
+
+
+biotype_data$col_fill <- factor(biotype_data$col_fill, levels = c("k","Protein Coding","y","lncRNA","i","Misc RNA","x","o","u"))
+
+ggplot(biotype_data, aes(x = gene_biotype, y = after_stat(count), fill = col_fill)) +
+  geom_bar() +
+  ggrepel::geom_text_repel(stat='count', aes(label=after_stat(count)), position = position_stack(vjust = 0.5), size = 3.5) +
+  scale_fill_manual(values = viridis::viridis(9, begin = 0.1, end = 0.975)) +
+  theme_classic() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  theme(axis.text.x=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank()) +
+  coord_flip()
+
+ggsave(filename = paste(savedir,"RMS_TX_GTF.pdf",sep="/"),
+       height = 4,
+       width = 8)
+
+```
