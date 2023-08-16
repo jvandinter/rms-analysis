@@ -23,20 +23,11 @@ savedir <- paste(wd, "results", sep = "/")
 gtf_file <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.gtf"
 gtf_rannot_file <- paste("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/","RMS_full","RMS_full_novel_filtered_corrected.gtf_Rannot", sep = "/")
 
+colors = RColorBrewer::brewer.pal(4, "Set1")
+
 thresholds <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)
 
 orf_methods <- c("ORFquant", "PRICE", "Ribo-TISH", "Ribotricer")
-
-orfquant_files = list.files(paste(wd,"analysis","ORFquant", sep = "/"),
-                            pattern = "*final_ORFquant_results",
-                            recursive = T,
-                            full.names = T)
-
-# Tissue
-orfquant_files <- subset(orfquant_files,grepl("-TIS-",orfquant_files))
-
-# # organoid
-# orfquant_files <- subset(orfquant_files,grepl("-ORG-",orfquant_files))
 
 ```
 
@@ -616,16 +607,25 @@ load(gtf_rannot_file)
 gtf_ref <- GTF_annotation$cds_txs %>% as.data.frame() %>% 
     group_by(group_name) %>% 
     summarise(gtf_sta = min(start), gtf_end = max(end)) %>% 
-    rename(transcript_id = group_name)
+    dplyr::rename(transcript_id = group_name)
 ```
 
-```{r parse ORFquant results}
+```{r load ORFquant results}
 
-orfquant_orfs <- prepare_orfs(orfquant_files, orf_methods[1], 2)
+load(paste0(savedir, "/orfs_separate.RData"))
+load(paste0(savedir, "/orfs_combined.RData"))
+load(paste0(savedir, "/orfs_overlap.RData"))
 
-orfquant_orfs_combined <- get_combined_orfs(orfquant_orfs, orfquant_files)
+orfquant_files = list.files(paste(wd,"analysis","ORFquant", sep = "/"),
+                            pattern = "*final_ORFquant_results",
+                            recursive = T,
+                            full.names = F)
 
-orfquant_overlap <- get_partial_overlap(orfquant_orfs_combined, thresholds)
+# Tissue
+tis_files <- gsub("-RD_final_ORFquant_results","",basename(subset(orfquant_files,grepl("-TIS-",orfquant_files))))
+
+# # organoid
+org_files <- gsub("-SEDH_final_ORFquant_results","",basename(subset(orfquant_files,grepl("-ORG-",orfquant_files))))
 
 ```
 
@@ -661,9 +661,51 @@ ggsave("RMS_ORF_counts.pdf", device = "pdf", path = savedir,
        height = 700, units = "px")
 ```
 
-/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results
 
-# Subset orfs by occurrence
+# Separate ORG and TIS combined ORF lists
+```{r separate TIS & ORG}
+mat_80 <- orfquant_overlap[,grepl("0[.]8",colnames(orfquant_overlap))]
+rownames(mat_80) <- names(orfquant_orfs_combined) 
+mat_80 <- as.data.frame(mat_80) %>%
+  dplyr::mutate(orf_id = names(orfquant_orfs_combined),
+                count = rowSums(.[1:51]!=0))
+colnames(mat_80) <- c(org_files,tis_files,"parent","orf_id","count")
+
+tis_80_mat <- mat_80[,colnames(mat_80) %in% c("orf_id",tis_files,"parent","count")] %>%
+  dplyr::mutate(count = rowSums(.[1:length(tis_files)]!=0))
+
+org_80_mat <- mat_80[,colnames(mat_80) %in% c("orf_id",org_files,"parent","count")] %>%
+  dplyr::mutate(count = rowSums(.[1:length(org_files)]!=0))
+
+```
+
+```{r create TIS GTF}
+
+tis_orfs_combined <- subset(orfquant_orfs_combined, names(orfquant_orfs_combined) %in% 
+                    rownames(tis_80_mat[which(tis_80_mat$count > 2),]))
+
+tis_gtf <- tis_orfs_combined %>%
+  unlist() %>%
+  rtracklayer::export.gff(con = paste(savedir,"tissue_ORFs.gtf"))
+
+```
+
+```{r create ORG GTF}
+
+org_orfs_combined <- subset(orfquant_orfs_combined, names(orfquant_orfs_combined) %in% 
+                    rownames(org_80_mat))
+
+org_gtf <- subset(orfquant_orfs_combined, names(orfquant_orfs_combined) %in% 
+                    rownames(org_80_mat[which(org_80_mat$count > 2),])) %>%
+  unlist() %>%
+  rtracklayer::export.gff(con = paste(savedir,"tumoroid_ORFs.gtf"))
+
+
+```
+
+# COMBINED
+
+## Subset orfs by occurrence
 ```{r}
 
 # Subset orfs by occurrence
@@ -677,15 +719,16 @@ orfs_viable <- orfquant_orfs_combined[orfs_occurence %>%
                                       filter(rowsum >= 3) %>% rownames()]
 
 orfs_half <- orfquant_orfs_combined[orfs_occurence %>% 
-                                      filter(rowsum >= 10) %>% rownames()]
+                                      filter(rowsum >= round(length(orfquant_files)/2)) %>% rownames()]
 
 orfs_common <- orfquant_orfs_combined[orfs_occurence %>% 
-                                      filter(rowsum >= 19) %>% rownames()]
+                                      filter(rowsum >= length(orfquant_files)) %>% rownames()]
+
 ```
 
 "All","Viable","Half","Common"
 
-# Create length graph
+## Create length graph
 ```{r}
 orf_lengths_all <- data.frame(lengths = sum(width(orfs_all))-3, method = orf_methods[1]) %>% 
   bind_rows() %>% mutate(shared = "All")
@@ -751,7 +794,7 @@ ggsave("RMS_ORF_length.pdf", device = "pdf", path = savedir,
 ```
 
 "All","Viable","Half","Common"
-# Create category graph
+## Create category graph
 ```{r}
 
 categories_all <- data.frame(mcols(orfs_all), 
@@ -816,7 +859,7 @@ ggsave("ORF_categories.pdf", device = "pdf", path = savedir, width = 1800,
 
 ```
 
-# Create category graph -- percentage
+## Create category graph -- percentage
 ```{r}
 
 ggplot(data=cat_df, 
@@ -836,6 +879,274 @@ ggsave("ORF_categories_percentage.pdf", device = "pdf", path = savedir, width = 
 
 ```
 
+
+
+# ORG
+
+## Subset orfs by occurrence
+```{r}
+
+# Subset orfs by occurrence
+orfs_occurence <- filter_orfs(org_80_mat,org_orfs_combined)
+
+
+orfs_all <- orfquant_orfs_combined[orfs_occurence %>% 
+                                      filter(rowsum >= 1) %>% rownames()] 
+
+orfs_viable <- orfquant_orfs_combined[orfs_occurence %>% 
+                                      filter(rowsum >= 3) %>% rownames()]
+
+orfs_half <- orfquant_orfs_combined[orfs_occurence %>% 
+                                      filter(rowsum >= round(length(orfquant_files)/2)) %>% rownames()]
+
+orfs_common <- orfquant_orfs_combined[orfs_occurence %>% 
+                                      filter(rowsum >= length(orfquant_files)) %>% rownames()]
+
+```
+
+"All","Viable","Half","Common"
+## Create category graph
+```{r}
+
+categories_all <- data.frame(mcols(orfs_all), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "All")
+
+categories_viable <- data.frame(mcols(orfs_viable), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "Viable")
+
+categories_half <- data.frame(mcols(orfs_half), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "Half")
+
+categories_common <- data.frame(mcols(orfs_common), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "Common")
+
+cat_df <- list(categories_all, 
+               categories_viable, 
+               categories_half,
+               categories_common) %>% 
+  bind_rows() %>% 
+  mutate(orf_category = factor(orf_category, levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncRNA", "novel")),
+      shared = factor(shared, levels = c("All","Viable","Half","Common")))
+
+plot_col <- c(c(brewer.pal(12, "Set3")), c(brewer.pal(12, "Paired"))[12])
+
+ggplot(data=cat_df, 
+                 aes(x=shared, y=cat_count, fill=orf_category)) + 
+  geom_bar(stat="identity") +
+  scale_y_continuous(name="Percentage of ORFs", expand = c(0, 0)) +
+  scale_x_discrete(name = "Minimum number of samples in which an ORF was found", 
+                   expand = c(0, 0), labels = c("1", "3", "half","all samples")) +
+  theme(legend.text = element_text(size = 12)) +
+  theme_classic() + theme(axis.text = element_text(colour="black", size=9)) +
+  theme(axis.title = element_text(colour="black", size=12)) +
+  labs(linetype=element_blank(), fill="ORF category") +
+  scale_fill_manual(values=plot_col)
+
+ggsave("ORF_categories.pdf", device = "pdf", path = savedir, width = 1800, 
+       height = 1200, units = "px")
+
+```
+
+## Create category graph -- percentage
+```{r}
+
+ggplot(data=cat_df, 
+                 aes(x=shared, y=perc, fill=orf_category)) + 
+  geom_bar(stat="identity") +
+  scale_y_continuous(name="Percentage of ORFs", expand = c(0, 0)) +
+  scale_x_discrete(name = "Minimum number of samples in which an ORF was found", 
+                   expand = c(0, 0), labels = c("1", "3", "half","all samples")) +
+  theme(legend.text = element_text(size = 12)) +
+  theme_classic() + theme(axis.text = element_text(colour="black", size=9)) +
+  theme(axis.title = element_text(colour="black", size=12)) +
+  labs(linetype=element_blank(), fill="ORF category") +
+  scale_fill_manual(values=plot_col)
+
+ggsave("ORF_categories_percentage.pdf", device = "pdf", path = savedir, width = 1800, 
+       height = 1200, units = "px")
+
+```
+
+# TISSUE
+
+"All","Viable","Half","Common"
+## Create category graph
+```{r}
+
+categories_all <- data.frame(mcols(orfs_all), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "All")
+
+categories_viable <- data.frame(mcols(orfs_viable), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "Viable")
+
+categories_half <- data.frame(mcols(orfs_half), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "Half")
+
+categories_common <- data.frame(mcols(orfs_common), 
+                            method = orf_methods[1]) %>% bind_rows() %>% 
+  left_join(lnc_genes, "gene_id") %>% 
+  mutate(orf_category = ifelse(!is.na(biotype), biotype, orf_category)) %>% 
+  group_by(method, orf_category) %>% summarise(cat_count = dplyr::n()) %>% 
+  ungroup() %>% group_by(method) %>% 
+  mutate(perc = cat_count/sum(cat_count)*100, shared = "Common")
+
+cat_df <- list(categories_all, 
+               categories_viable, 
+               categories_half,
+               categories_common) %>% 
+  bind_rows() %>% 
+  mutate(orf_category = factor(orf_category, levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncRNA", "novel")),
+      shared = factor(shared, levels = c("All","Viable","Half","Common")))
+
+plot_col <- c(c(brewer.pal(12, "Set3")), c(brewer.pal(12, "Paired"))[12])
+
+ggplot(data=cat_df, 
+                 aes(x=shared, y=cat_count, fill=orf_category)) + 
+  geom_bar(stat="identity") +
+  scale_y_continuous(name="Percentage of ORFs", expand = c(0, 0)) +
+  scale_x_discrete(name = "Minimum number of samples in which an ORF was found", 
+                   expand = c(0, 0), labels = c("1", "3", "half","all samples")) +
+  theme(legend.text = element_text(size = 12)) +
+  theme_classic() + theme(axis.text = element_text(colour="black", size=9)) +
+  theme(axis.title = element_text(colour="black", size=12)) +
+  labs(linetype=element_blank(), fill="ORF category") +
+  scale_fill_manual(values=plot_col)
+
+ggsave("ORF_categories.pdf", device = "pdf", path = savedir, width = 1800, 
+       height = 1200, units = "px")
+
+```
+
+## Create category graph -- percentage
+```{r}
+
+ggplot(data=cat_df, 
+                 aes(x=shared, y=perc, fill=orf_category)) + 
+  geom_bar(stat="identity") +
+  scale_y_continuous(name="Percentage of ORFs", expand = c(0, 0)) +
+  scale_x_discrete(name = "Minimum number of samples in which an ORF was found", 
+                   expand = c(0, 0), labels = c("1", "3", "half","all samples")) +
+  theme(legend.text = element_text(size = 12)) +
+  theme_classic() + theme(axis.text = element_text(colour="black", size=9)) +
+  theme(axis.title = element_text(colour="black", size=12)) +
+  labs(linetype=element_blank(), fill="ORF category") +
+  scale_fill_manual(values=plot_col)
+
+ggsave("ORF_categories_percentage.pdf", device = "pdf", path = savedir, width = 1800, 
+       height = 1200, units = "px")
+
+```
+
+# Check RMS-specific ORFs
+
+```{r}
+
+orfs_combined <- subset(orfquant_orfs_combined, names(orfquant_orfs_combined) %in% 
+                    rownames(mat_80[which(mat_80$count > 2),]))
+
+found_ORFs <- gsub("[.]\\d+$","",gsub("_.*","",grep("MSTRG",names(orfs_combined),value = T))) %>%
+  subset(. %in% pass_novel$gene_id)
+
+rms_spec_orf_mat <- mat_80[which(gsub("[.]\\d+$","",
+                                                gsub("_.*","",rownames(mat_80))) %in% found_ORFs),] %>%
+  dplyr::filter(count > 1)
+
+rms_spec_orf_tis <- tis_80_mat[which(gsub("[.]\\d+$","",
+                                                gsub("_.*","",rownames(tis_80_mat))) %in% found_ORFs),] %>%
+  dplyr::filter(count > 1)
+
+rms_spec_orf_org <- org_80_mat[which(gsub("[.]\\d+$","",
+                                                gsub("_.*","",rownames(org_80_mat))) %in% found_ORFs),] %>%
+  dplyr::filter(count > 1)
+
+
+
+```
+
+```{r count distribution}
+cols <- viridis::inferno(3, alpha = 0.6, begin = 0.45, end = 0.85)
+plot_df <- data.frame(count = c(rms_spec_orf_org$count,
+                                rms_spec_orf_tis$count),
+                      group = c(rep("org",length(rms_spec_orf_org$count)),
+                                rep("tis",length(rms_spec_orf_tis$count))),
+                      orf_id = c(rms_spec_orf_org$orf_id,
+                                rms_spec_orf_tis$orf_id)
+  
+)
+ggplot(plot_df,aes(count, fill = group)) +
+  geom_histogram(bins = 22) +
+  scale_fill_manual(values = cols) +
+  theme_classic()
+```
+
+```{r upset novel ORFs}
+orf_list <- list(`RMS-spec genes` = pass_novel$gene_id,
+                 `found RMS ORFs` = gsub("[.]\\d+$","",gsub("_.*","",grep("MSTRG",names(orfs_combined),value = T))),
+                 `RMS-spec tissue ORF` = gsub("[.]\\d+$","",
+                                                gsub("_.*","",rownames(rms_spec_orf_tis))),
+                 `RMS-spec organoid ORF` = gsub("[.]\\d+$","",
+                                                gsub("_.*","",rownames(rms_spec_orf_org)))
+                 )
+
+
+m = ComplexHeatmap::make_comb_mat(orf_list)
+
+
+pdf(file = paste(savedir,"RMS_upset_ORF_novel.pdf", sep = "/"),
+    width = 6,
+    height = 4)
+draw(ComplexHeatmap::UpSet(m,
+                      pt_size = unit(5, "mm"), 
+                      column_title = "RMS novel genes with ORFs",
+                      lwd = 3,
+                      comb_col = c("red", "blue","forestgreen", "black")[comb_degree(m)],
+                      top_annotation = ComplexHeatmap::upset_top_annotation(m, add_numbers = TRUE),
+                      right_annotation = ComplexHeatmap::upset_right_annotation(m, add_numbers = TRUE)
+                      ))
+dev.off()
+
+```
 # Troubleshooting
 
 **Final remark error:**

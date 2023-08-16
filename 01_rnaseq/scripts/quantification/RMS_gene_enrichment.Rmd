@@ -33,7 +33,8 @@ meta_tumor <- read.delim(file = paste(wd,"documentation","metadata_annot_RMS.txt
 fusion_tumor <- read.delim(file = paste(wd,"results","starfusion","fusion_annotation.txt", sep ="/")) %>%
   dplyr::filter(sample_id %in% meta_tumor$sample_id)
 
-meta_tumor$new_condition <- ifelse(meta_tumor$sample_id %in% fusion_tumor[which(fusion_tumor$condition_check =="mismatch"),]$sample_id, "ERMS",meta_tumor$new_condition)
+meta_tumor <- meta_tumor %>%
+  dplyr::filter(!(sample_id %in% fusion_tumor[which(fusion_tumor$condition_check == "mismatch"),]$sample_id))
 
 # NBL cohort
 txi_tumor <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% meta_tumor$sample_id)],
@@ -195,6 +196,8 @@ rownames(meta_tumoroid) <- meta_tumoroid$sample_id
 
 meta_tumoroid$condition <- factor(meta_tumoroid$condition, levels = c("ERMS","ARMS"))
 
+meta_tumoroid$replicate <- rep(1:8,each =4)[-32]
+
 ```
 
 ```{r perform DEseq2}
@@ -209,8 +212,6 @@ tumoroid_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumoroid,
                                             colData = meta_tumoroid,
                                             design = ~ condition)
 
-tumoroid_vsd <- DESeq2::vst(tumoroid_dds, blind = F)
-
 keep <- rowSums(counts(tumoroid_dds) >= 10) >= 2
 tumoroid_dds <- tumoroid_dds[keep,]
 
@@ -220,13 +221,19 @@ saveRDS(tumoroid_dds, file = paste(savedir,paste0(tumor_type,"_DESEQ_tumoroid_su
 
 resultsNames(tumoroid_dds)
 
-tumor_arms <- as.data.frame(results(tumor_dds, contrast=c("condition","ARMS","ERMS")))
+tumoroid_arms <- as.data.frame(results(tumoroid_dds, contrast=c("condition","ARMS","ERMS")))
 
-write.table(tumor_arms, file = paste(savedir,"RMS_FP_tumoroid_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+write.table(tumoroid_arms, file = paste(savedir,"RMS_FP_tumoroid_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+write.table(meta_tumoroid, file = paste(savedir,"RMS_tumoroid_metadata.txt",sep = "/"), quote = F, sep = ";", row.names = T)
 
 ```
 
 ```{r create PCA}
+
+tumoroid_dds <- readRDS(paste(savedir,paste0(tumor_type,"_DESEQ_tumoroid_subtype.RDS"), sep = "/"))
+
+tumoroid_vsd <- DESeq2::vst(tumoroid_dds, blind = F)
 
 canon_genes <- assay(tumoroid_vsd)[which(grepl("ENSG",rownames(assay(tumoroid_vsd)))),]
 novel_genes <- assay(tumoroid_vsd)[which(grepl("MSTRG",rownames(assay(tumoroid_vsd)))),]
@@ -238,17 +245,21 @@ rv <- rowVars(novel_genes)
     pca <- prcomp(t(novel_genes[select, ]))
     percentVar <- pca$sdev^2/sum(pca$sdev^2)
 
-    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition"), 
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","replicate"), 
         drop = FALSE])
+    intgroup.df$replicate <- as.factor(intgroup.df$replicate)
     group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
     d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
         intgroup.df, name = colnames(tumoroid_vsd))
     attr(d, "percentVar") <- percentVar[1:2]
     
-    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
-        geom_point(size = 8, alpha = 0.25) + xlab(paste0("PC1: ", round(percentVar[1] * 
-        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
-        100), "% variance")) + coord_fixed() +
+    ggplot(data = d, aes(x = PC1, y = PC2, color = replicate, shape = condition, label = name)) + 
+      geom_point(size = 8, alpha = 0.25) + 
+      ggrepel::geom_text_repel() +
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      guides(label = "none",color = "none") +
+      coord_fixed() +
       theme_classic()
     
     ggsave(filename = paste(savedir,"RMS_tumoroids_pca_novel.pdf",sep="/"),
@@ -262,17 +273,21 @@ rv <- rowVars(canon_genes)
     pca <- prcomp(t(canon_genes[select, ]))
     percentVar <- pca$sdev^2/sum(pca$sdev^2)
 
-    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition"), 
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","replicate"), 
         drop = FALSE])
+    intgroup.df$replicate <- as.factor(intgroup.df$replicate)
     group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
     d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
         intgroup.df, name = colnames(tumoroid_vsd))
     attr(d, "percentVar") <- percentVar[1:2]
     
-    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
-        geom_point(size = 8, alpha = 0.25) + xlab(paste0("PC1: ", round(percentVar[1] * 
-        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
-        100), "% variance")) + coord_fixed(ratio = 1) +
+    ggplot(data = d, aes(x = PC1, y = PC2, color = replicate, shape = condition, label = name)) + 
+      geom_point(size = 8, alpha = 0.25) + 
+      ggrepel::geom_text_repel(max.overlaps = 20) +
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      guides(label = "none",color = "none") +
+      coord_fixed() +
       theme_classic()
     
     ggsave(filename = paste(savedir,"RMS_tumoroids_pca_canon.pdf",sep="/"),
@@ -287,17 +302,21 @@ rv <- rowVars(canon_genes)
     pca <- prcomp(t(assay(tumoroid_vsd)[select, ]))
     percentVar <- pca$sdev^2/sum(pca$sdev^2)
 
-    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition"), 
+        intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","replicate"), 
         drop = FALSE])
+    intgroup.df$replicate <- as.factor(intgroup.df$replicate)
     group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
     d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
         intgroup.df, name = colnames(tumoroid_vsd))
     attr(d, "percentVar") <- percentVar[1:2]
     
-    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
-        geom_point(size = 8, alpha = 0.25) + xlab(paste0("PC1: ", round(percentVar[1] * 
-        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
-        100), "% variance")) + coord_fixed() +
+    ggplot(data = d, aes(x = PC1, y = PC2, color = replicate, shape = condition, label = name)) + 
+      geom_point(size = 8, alpha = 0.25) + 
+      ggrepel::geom_text_repel(max.overlaps = 20) +
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      guides(label = "none",color = "none") +
+      coord_fixed() +
       theme_classic()
     
     ggsave(filename = paste(savedir,"RMS_tumoroids_pca_all.pdf",sep="/"),
@@ -468,11 +487,119 @@ rv <- rowVars(canon_genes)
 
 ```{r}
 
+pass_novel <- read.delim(file = paste(savedir,
+                                      paste0(tumor_type,"_novel_enriched_matrix.txt"),
+                                      sep = "/"), 
+                         sep = ";") %>%
+  dplyr::distinct()
+
+pass_canon <- read.delim(file = paste(savedir,
+                                      paste0(tumor_type,"_canon_enriched_matrix.txt"),
+                                      sep = "/"), 
+                         sep = ";")
+
+table(pass_canon$pass)
+
 ```
 
 # FP-RMS specific genes
 
-```{r }
+
+## tumor
+```{r tumor}
+
+tumor_sig <- tumor_arms %>%
+  dplyr::filter(padj < 0.01 & log2FoldChange > 1) %>%
+  dplyr::mutate(novel = ifelse(grepl("MSTRG",rownames(.)),T,F))
+
+table(tumor_sig$novel)
+
+table(row.names(tumor_sig) %in% pass_novel[which(pass_novel$pass == T),]$gene_id)
+
+table(row.names(tumor_sig) %in% pass_canon[which(pass_canon$pass == T),]$gene_id)
 
 ```
 
+## tumoroid
+```{r tumoroid}
+
+tumoroid_sig <- tumoroid_arms %>%
+  dplyr::filter(padj < 0.01 & log2FoldChange > 1) %>%
+  dplyr::mutate(novel = ifelse(grepl("MSTRG",rownames(.)),T,F))
+
+table(tumoroid_sig$novel)
+
+table(row.names(tumoroid_sig) %in% pass_novel[which(pass_novel$pass == T),]$gene_id)
+
+table(row.names(tumoroid_sig) %in% pass_canon[which(pass_canon$pass == T),]$gene_id)
+
+```
+
+```{r create upset plot}
+
+genes_novel_list <- list(`RMS-specific genes` = pass_novel[which(pass_novel$pass == T),]$gene_id,
+              `FP-RMS genes - TUM` = row.names(tumor_sig[which(tumor_sig$novel == T),]),
+              `FP-RMS genes - ORG` = row.names(tumoroid_sig[which(tumoroid_sig$novel == T),]))
+
+m = ComplexHeatmap::make_comb_mat(genes_novel_list)
+
+
+pdf(file = paste(savedir,"RMS_upset_novel.pdf", sep = "/"),
+    width = 6,
+    height = 4)
+draw(ComplexHeatmap::UpSet(m,
+                      pt_size = unit(5, "mm"), 
+                      column_title = "RMS novel genes",
+                      lwd = 3,
+                      comb_col = c("red", "blue", "black")[comb_degree(m)],
+                      top_annotation = ComplexHeatmap::upset_top_annotation(m, add_numbers = TRUE),
+                      right_annotation = ComplexHeatmap::upset_right_annotation(m, add_numbers = TRUE)
+                      ))
+dev.off()
+
+```
+
+```{r create upset plot -- canon}
+genes_canon_list <- list(`RMS-specific genes` = pass_canon[which(pass_canon$pass == T),]$gene_id,
+              `FP-RMS genes - TUM` = row.names(tumor_sig[which(tumor_sig$novel == F),]),
+              `FP-RMS genes - ORG` = row.names(tumoroid_sig[which(tumoroid_sig$novel == F),]))
+
+m = ComplexHeatmap::make_comb_mat(genes_canon_list)
+
+pdf(file = paste(savedir,"RMS_upset_canon.pdf", sep = "/"),
+    width = 6,
+    height = 4)
+
+draw(ComplexHeatmap::UpSet(m,
+                      column_title = "RMS canon genes",
+                      pt_size = unit(5, "mm"), 
+                      lwd = 3,
+                      comb_col = c("red", "blue", "black")[comb_degree(m)],
+                      top_annotation = ComplexHeatmap::upset_top_annotation(m, add_numbers = TRUE),
+                      right_annotation = ComplexHeatmap::upset_right_annotation(m, add_numbers = TRUE)
+                      ))
+dev.off()
+```
+
+```{r create upset plot -- shared}
+genes_canon_list <- list(`RMS-specific genes` = c(pass_canon[which(pass_canon$pass == T),]$gene_id,
+                                                  pass_novel[which(pass_novel$pass == T),]$gene_id),
+              `FP-RMS genes - TUM` = row.names(tumor_sig),
+              `FP-RMS genes - ORG` = row.names(tumoroid_sig))
+
+m = ComplexHeatmap::make_comb_mat(genes_canon_list)
+
+pdf(file = paste(savedir,"RMS_upset_all_genes.pdf", sep = "/"),
+    width = 6,
+    height = 4)
+
+draw(ComplexHeatmap::UpSet(m,
+                      column_title = "RMS genes",
+                      pt_size = unit(5, "mm"), 
+                      lwd = 3,
+                      comb_col = c("red", "blue", "black")[comb_degree(m)],
+                      top_annotation = ComplexHeatmap::upset_top_annotation(m, add_numbers = TRUE),
+                      right_annotation = ComplexHeatmap::upset_right_annotation(m, add_numbers = TRUE)
+                      ))
+dev.off()
+```

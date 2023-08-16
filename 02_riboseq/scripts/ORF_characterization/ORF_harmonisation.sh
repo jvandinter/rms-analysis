@@ -2,7 +2,7 @@
 #SBATCH --cpus-per-task 1
 #SBATCH --job-name ORF_combiner
 #SBATCH --gres=tmpspace:20G
-#SBATCH --mem=32G
+#SBATCH --mem=144G
 #SBATCH --time=144:00:00 
 
 
