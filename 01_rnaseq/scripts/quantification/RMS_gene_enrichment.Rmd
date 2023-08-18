@@ -5,7 +5,7 @@ date: "2023-07-10"
 output: html_document
 ---
 
-# Introduction
+# PCAs
 
 This RMD contains the scripts to analyze the DEseq2 output
 
@@ -74,7 +74,14 @@ write.table(tumor_arms, file = paste(savedir,"RMS_FP_res.txt",sep = "/"), quote 
 
 ```
 
+```{r read data}
+tumor_arms <- read.delim(paste(savedir,"RMS_FP_res.txt",sep = "/"), sep = ";")
+tumor_dds <- readRDS(paste(savedir,paste0(tumor_type,"_DESEQ_subtype.RDS"), sep = "/"))
+
+```
+
 ```{r create PCA}
+
 tumor_vsd <- DESeq2::vst(tumor_dds, blind = F)
 
 canon_genes <- assay(tumor_vsd)[which(grepl("ENSG",rownames(assay(tumor_vsd)))),]
@@ -481,6 +488,87 @@ rv <- rowVars(canon_genes)
     ggsave(filename = paste(savedir,"RMS_combined_pca_all.pdf",sep="/"),
        height = 6,
        width = 6)
+```
+
+# Heatmaps
+
+## Subtype factor HM
+
+```{r }
+picked <- c("DES"="ENSG00000175084","MYOG"="ENSG00000122180","MYOD1"="ENSG00000129152")
+
+meta <- as.data.frame(colData(tumor_vsd))
+
+heatmap_matrix <- t(scale(t(assay(tumor_vsd))))
+heatmap_matrix <- heatmap_matrix[which(rownames(heatmap_matrix) %in% picked),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+hm_fp <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ARMS"),]$sample_id)]
+hm_fn <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition %in% c("SCRMS","ERMS")),]$sample_id)]
+
+breaks <- seq(-2, 2, length.out = 100)
+
+chm_fp <- ComplexHeatmap::Heatmap(matrix = hm_fp,
+                          # Hide names
+  show_row_names = T,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_fn <- ComplexHeatmap::Heatmap(matrix = hm_fn,
+                          # Hide names
+                          cluster_columns = T,
+  show_row_names = F,
+  show_row_dend = T,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+
+pdf(file = paste(savedir,"heatmaps",paste0(plotname,".pdf"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_fp + chm_fn,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+
+```
+
+```{r}
+
+count_matrix <- heatmap_matrix %>%
+  as.data.frame() %>%
+  dplyr::mutate(gene_id = names(picked)[match(rownames(.), picked)]) %>%
+  tidyr::pivot_longer(!gene_id,
+                      names_to = "sample_id",
+                      values_to = "scaled_vst")
+# boxplot per group
+plot_df <- dplyr::left_join(count_matrix,meta, by = "sample_id")
+
+ggplot(plot_df, aes(x = condition, y = scaled_vst)) +
+  ggbeeswarm::geom_quasirandom(aes(col = batch)) +
+  stat_summary(fun = median, fun.min = ~quantile(.x, probs = .25), 
+               fun.max = ~quantile(.x, probs = .75), shape = 21, stroke = 1.2, 
+               linewidth = 2, size = 2, aes(fill = condition)) +
+  theme_classic() +
+  facet_wrap(~ gene_id)
+
 ```
 
 # RMS-enriched genes

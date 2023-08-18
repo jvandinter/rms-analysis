@@ -4,6 +4,21 @@ output: html_notebook
 date: 13-07-2022
 ---
 
+If MultiQC stats have not been generated yet, run the following on an interactive
+compute note on the HPC:
+
+```{bash}
+container_dir="/hpc/local/Rocky8/pmc_vanheesch/singularity_images"
+name="multiqc_name"
+wd="wd"
+
+apptainer exec -B "/hpc:/hpc" --env "LC_ALL=C.UTF-8" \
+ ${container_dir}/multiqc-1.11.sif multiqc \
+ "${wd}/analysis" \
+ --outdir "${wd}/analysis/multiqc" \
+ --filename "${name}_multiqc.html"
+```
+
 ```{r}
 suppressPackageStartupMessages({
   library(stringr)
@@ -19,7 +34,7 @@ suppressPackageStartupMessages({
 
 wd = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis"
 
-savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results"
+savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/QC"
 
 multiqc_name = "ribo_rms"
 
@@ -49,7 +64,7 @@ trim_plot <- trim_stats %>%
   dplyr::select(c("Sample","r_written","bp_processed","quality_trimmed","bp_written")) %>%
   tidyr::pivot_longer(cols = c(3,4)) %>%
   dplyr::mutate(Sample = factor(Sample, levels = trim_stats[order(trim_stats$r_written),]$Sample)) %>%
-  dplyr::mutate(Sample = gsub("-1-AL.*","",Sample))
+  dplyr::mutate(Sample = gsub("-.*","",Sample))
 
 ```
 
@@ -87,13 +102,12 @@ for (i in seq_along(contaminant_files)){
   contaminants <- read.delim(contaminant_files[i], skip = 1, header = T)[-1, ]
   colnames(contaminants)[1] <- "Sample"
   contaminants$Sample <- paste(
-    strsplit(basename(contaminant_files[i]), "-AL_")[[1]][1], 
+    strsplit(basename(contaminant_files[i]), "-.*")[[1]][1], 
     collapse = "-")
 
   contaminant_df <- rbind(contaminant_df, contaminants)
 }
 
-contaminant_df$READ_TYPE <- factor(contaminant_df$READ_TYPE)
 contaminant_df$READ_TYPE <- factor(contaminant_df$READ_TYPE, levels = c("tRNA",'mtDNA',"snoRNA","rRNA","snRNA","Passed"))
 
 ```
@@ -164,22 +178,23 @@ star_stats <- read.delim(paste(wd,
                                paste0(multiqc_name,"_multiqc_data"),
                                "multiqc_star.txt", sep ="/")) %>%
   dplyr::filter(!(grepl("STARpass1", Sample))) %>%
-  dplyr::mutate(Sample = gsub("-1-AL.*","",Sample))
+  dplyr::mutate(Sample = gsub("-L.*","",Sample),
+                group = c(rep("ORG",32),rep("TUM",19)))
 
 star_perc_stats <- star_stats %>%
-  dplyr::select(c("Sample",
+  dplyr::select(c("Sample","group",
                   "uniquely_mapped_percent","multimapped_percent",
                   "unmapped_tooshort_percent","unmapped_other_percent")) %>%
-  tidyr::pivot_longer(cols = c(2:5)) %>%
+  tidyr::pivot_longer(cols = c(3:6)) %>%
   dplyr::mutate(Sample = factor(Sample, levels = star_stats[order(star_stats$uniquely_mapped_percent),]$Sample),
                 name = factor(name,levels = c("unmapped_other_percent","unmapped_tooshort_percent",
                                               "multimapped_percent","uniquely_mapped_percent")))
 
 star_stats <- star_stats %>%
-  dplyr::select(c("Sample",
+  dplyr::select(c("Sample","group",
                   "uniquely_mapped", "multimapped", 
                   "unmapped_tooshort", "unmapped_other")) %>%
-  tidyr::pivot_longer(cols = c(2:5)) %>%
+  tidyr::pivot_longer(cols = c(3:6)) %>%
   dplyr::mutate(Sample = factor(Sample, levels = star_stats[order(star_stats$uniquely_mapped),]$Sample),
                 name = factor(name,levels = c("unmapped_other","unmapped_tooshort",
                                               "multimapped","uniquely_mapped")))
@@ -196,7 +211,8 @@ ggplot(data = star_stats, aes(x = Sample, y = value, fill = name)) +
        x = "Samples", 
        y = "Total RNAseq reads", 
        fill = "Read type") +
-  theme(axis.text.x = element_text(angle = 65, hjust = 1))
+  theme(axis.text.x = element_text(angle = 65, hjust = 1)) +
+  facet_grid(~ group, scales = "free_x")
 
 ggsave(filename = "star_alignment_stats.pdf",
        device = "pdf",
@@ -216,7 +232,8 @@ ggplot(data = star_perc_stats, aes(x = Sample, y = value, fill = name)) +
   labs(x = "Samples", 
        y = "Total RNAseq reads", 
        fill = "Read type") +
-  theme(axis.text.x  = element_text(angle = 65, hjust = 1))
+  theme(axis.text.x  = element_text(angle = 65, hjust = 1))  +
+  facet_grid(~ group, scales = "free_x")
 
 ggsave(filename = "star_percentage_alignment_stats.pdf",
        device = "pdf",
@@ -235,7 +252,7 @@ riboseqc_files <- list.files(paste(wd,
                                    sep ="/"),
                              pattern = "results_RiboseQC_all", 
                              full.names = T, 
-                             recursive = T)
+                             recursive = T)[1:51]
 
 # Create data.frame with all frame preferences
 summary_P_sites_df <- data.frame()
@@ -280,8 +297,12 @@ read_cats_annotgenes <- subset(read_cats_long, name %in% c("fiveutrs", "cds", "t
 
 # Create plot DFs
 
-frame_perc_plot <- tidyr::pivot_longer(perc_reads_df, cols = colnames(perc_reads_df))
-readlen_29_df <- subset(summary_P_sites_df, read_length == 29 & comp == "nucl")
+cds_reads_df <- dplyr::mutate(cds_reads_df,group = c(rep("ORG",32),rep("TUM",19)))
+frame_perc_plot <- perc_reads_df %>%
+  dplyr::mutate(group = c(rep("ORG",32),rep("TUM",19))) %>%
+  tidyr::pivot_longer(cols = colnames(.)[-11])
+readlen_29_df <- subset(summary_P_sites_df, read_length == 29 & comp == "nucl") %>%
+  dplyr::mutate(group = c(rep("ORG",32),rep("TUM",19)))
 read_cats_annotgenes_perc <- read_cats_annotgenes %>%
   dplyr::group_by(sample_id) %>%
   dplyr::mutate(perc = round(value / sum(value)*100, 2))
@@ -292,36 +313,41 @@ read_cats_annotgenes_perc <- read_cats_annotgenes %>%
 ### RPF length
 
 ```{r riboseqc RPF length plot}
-ggplot(frame_perc_plot, aes(y = value, x = name)) +
+
+ggplot(frame_perc_plot,aes(y = value, x = name, col = group)) +
   ggbeeswarm::geom_beeswarm(size = 1, cex = 0.8, alpha = 1) +
   
   stat_summary(aes(group = 1, yend = ..y.., xend = ..x.. - 0.2), color = "black", fun = mean, geom = "segment") +
   stat_summary(aes(group = 1, yend = ..y.., xend = ..x.. + 0.2), color = "black", fun = mean, geom = "segment") +
   scale_y_continuous(labels = scales::percent_format(scale = 1)) +
   labs(y = "Reads", x = "Ribosome footprint length (nt)") +
-  theme_classic() 
+  theme_classic() +facet_grid(~ group)
 
 ggsave(filename = "ribo_rpf_length.pdf",
        path = savedir,
-       width = 4,
+       width = 10,
        height = 5)
 ```
 
 ### inframe
 
 ```{r riboseqc inframe plot}
-ggplot(data = inframe_df, aes(y = mean_pct_max_frame, x = reorder(rownames(inframe_df), -mean_pct_max_frame))) +
+inframe_df$group <- c(rep("ORG",32),rep("TUM",19))
+
+ggplot(data = inframe_df, aes(y = mean_pct_max_frame, 
+                              x = reorder(rownames(inframe_df), -mean_pct_max_frame))) +
   geom_bar(stat = "identity", fill = colors[1]) +
   scale_y_continuous(labels = scales::percent_format(scale = 1), limits = c(0, 100), expand = c(0, 0)) +
   geom_hline(yintercept = mean(inframe_df$mean_pct_max_frame), linetype = 2) +
   labs(y = "In-frame reads (all read lengths)", x = "Samples") +
   theme_classic() +
   theme_classic() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) +
+    facet_grid(~ group, scales = "free_x")
 
 ggsave(filename = "ribo_inframe_all_perc.pdf",
        path = savedir,
-       width = 4,
+       width = 8,
        height = 5)
 ```
 
@@ -336,11 +362,11 @@ ggplot(data = readlen_29_df, aes(y = frame_preference, x = reorder(sample_id, -f
 
   labs(y = "In-frame reads (29nt)", x = "Samples") +
   theme_classic() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) + facet_grid(~ group, scales = "free_x")
 
 ggsave(filename = "ribo_inframe_29nt_perc.pdf",
        path = savedir,
-       width = 4,
+       width = 8,
        height = 5)
 ```
 
@@ -377,7 +403,7 @@ ggplot(data = read_cats_annotgenes_perc,
   )
 ggsave(filename = "ribo_rpf_loc.pdf",
        path = savedir,
-       width = 4,
+       width = 10,
        height = 5)
 
 ```
@@ -392,7 +418,8 @@ ggplot(data = cds_reads_df, aes(y = reads, x = reorder(rownames(cds_reads_df), -
   geom_hline(yintercept = mean(cds_reads_df$reads), linetype = 2) +
   labs(y = "CDS reads", x = "Samples") +
   theme_classic() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 5)) + 
+  facet_grid(~ group, scales = "free_x")
 
 ggsave(filename = "ribo_CDS_count_barplot.pdf",
        path = savedir,
