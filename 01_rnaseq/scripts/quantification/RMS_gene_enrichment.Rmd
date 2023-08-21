@@ -13,6 +13,7 @@ This RMD contains the scripts to analyze the DEseq2 output
 library(magrittr)
 library(ggplot2)
 library(DESeq2)
+library(factoextra)
 ```
 
 ```{r parameters}
@@ -26,7 +27,8 @@ tumor_type = "RMS"
 
 ## RMS Patient PCA
 
-```{r load data}
+**Should only run once!**
+```{r load & prepare data}
 txi <- readRDS(Sys.readlink(paste(savedir, "RMS_counts_full.RDS", sep = "/")))
 meta_tumor <- read.delim(file = paste(wd,"documentation","metadata_annot_RMS.txt",sep="/"),
                          sep = ";")
@@ -74,9 +76,15 @@ write.table(tumor_arms, file = paste(savedir,"RMS_FP_res.txt",sep = "/"), quote 
 
 ```
 
+Actual analysis:
 ```{r read data}
 tumor_arms <- read.delim(paste(savedir,"RMS_FP_res.txt",sep = "/"), sep = ";")
 tumor_dds <- readRDS(paste(savedir,paste0(tumor_type,"_DESEQ_subtype.RDS"), sep = "/"))
+
+meta_tumor <- read.delim(file = paste(wd,"documentation","metadata_annot_RMS.txt",sep="/"),
+                         sep = ";")
+fusion_tumor <- read.delim(file = paste(wd,"results","starfusion","fusion_annotation.txt", sep ="/")) %>%
+  dplyr::filter(sample_id %in% meta_tumor$sample_id)
 
 ```
 
@@ -162,7 +170,180 @@ rv <- rowVars(canon_genes)
        width = 6)
 ```
 
+### Dissect the PCA
 
+Check the gene biotype of top 500 variance genes
+```{r }
+rms_gtf <- as.data.frame(rtracklayer::import.gff(paste(wd,"analysis","rnaseq_pipeline","customannotation","RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")))
+
+check_df <- data.frame(gene_id = rownames(assay(tumor_vsd)[select, ])) %>%
+  dplyr::left_join(rms_gtf[,c("gene_id","gene_biotype")]) %>%
+  dplyr::distinct()
+
+table(check_df$gene_biotype)
+```
+
+Just 200/500 genes are protein coding. What happens if we select only processed transcripts (using various parameters) to the component analysis?
+- bare necs
+  - Only lncRNAs, protein coding genes & novel annotated genes
+- Arbitrary
+  - Subjective arbitrary collection of RNAs
+- no small RNAs
+  - Remove only all annotated smRNAs
+
+```{r}
+
+biotype_bare_necs <- rms_gtf[,c("gene_id","gene_biotype")] %>%
+  dplyr::filter(gene_biotype %in% c("lncRNA","stringtie","protein_coding")) %>%
+  dplyr::distinct()
+
+biotype_arbitrary <- biotype_bare_necs <- rms_gtf[,c("gene_id","gene_biotype")] %>%
+  dplyr::filter(gene_biotype %in% c("lncRNA","stringtie","protein_coding","processed_pseudogene",
+                                    "transcribed_processed_pseudogene","transcribed_unitary_pseudogene",
+                                    "translated_processed_pseudogene","translated_unprocessed_pseudogene",
+                                    "IG_C_gene","IG_V_gene","IG_J_gene","IG_D_gene")) %>%
+  dplyr::distinct()
+
+biotype_big_rna <- rms_gtf[,c("gene_id","gene_biotype")] %>%
+  dplyr::filter(!(gene_biotype %in% c("miRNA","snRNA","misc_RNA","scaRNA",
+                                      "snoRNA","rRNA_pseudogene","scRNA",
+                                      "rRNA","sRNA","ribozyme","vault_RNA",
+                                      "Mt_tRNA","Mt_rRNA"))) %>%
+  dplyr::distinct()
+
+```
+
+Bare necs
+```{r}
+vsd_subset <- assay(tumor_vsd)[which(rownames(assay(tumor_vsd)) %in% biotype_bare_necs$gene_id),]
+
+    rv <- rowVars(vsd_subset)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(vsd_subset[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+Arbitrary group
+```{r}
+vsd_subset <- assay(tumor_vsd)[which(rownames(assay(tumor_vsd)) %in% biotype_arbitrary$gene_id),]
+
+    rv <- rowVars(vsd_subset)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(vsd_subset[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+No small RNAs
+```{r}
+vsd_subset <- assay(tumor_vsd)[which(rownames(assay(tumor_vsd)) %in% biotype_big_rna$gene_id),]
+
+# change rownames
+gene_name_gene_id <- rms_gtf[,c("gene_id","gene_name")] %>%
+  dplyr::distinct()
+tx_name_gene_id <- rms_gtf[,c("transcript_id","gene_id","gene_name")] %>%
+  dplyr::distinct()
+rownames(vsd_subset) <- gene_name_gene_id$gene_name[match(rownames(vsd_subset), gene_name_gene_id$gene_id)]
+
+
+    rv <- rowVars(vsd_subset)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(vsd_subset[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+Use big-RNA, as it removes the least amount of transcripts / genes and still gives similar results
+
+```{r}
+
+dd <- facto_summarize(pca, element = "var", result = "contrib", axes = 1) %>%
+  dplyr::mutate(gene_id = gene_name_gene_id$gene_id[match(name, gene_name_gene_id$gene_name)])
+
+# Contributions of variables to PC1
+fviz_contrib(pca, choice = "var", axes = 1, top = 50)
+
+# Contributions of variables to PC2
+fviz_contrib(pca, choice = "var", axes = 2, top = 50)
+```
+
+Still results in some genes that are mono exonic, such as RPL21P16. 
+
+
+Use the pol3 database that Marina found:
+```{r create }
+
+pol3_txs <- read.delim(file = "/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/hg38.genecode.v30.pol3ncRNA.bed", header = F) %>%
+  dplyr::select(c("V1","V2","V3","V4")) %>%
+  dplyr::rename("chr" = V1,"start" = V2,"end" = V3,"transcript_id" = V4) %>%
+  dplyr::mutate(transcript_id = gsub("\\..*","",gsub("\\|.*","",transcript_id))) %>%
+  dplyr::filter(grepl("^ENST",transcript_id)) %>%
+  dplyr::left_join(tx_name_gene_id, by = "transcript_id")
+
+```
+
+Try to annotate the PC1 with particular GO terms:
+
+```{r}
+
+library(org.Hs.eg.db)
+library(GO.db)
+
+go_annotations <- AnnotationDbi::select(org.Hs.eg.db, keys = dd$gene_id, columns = "GO", keytype = "ENSEMBL") %>%
+  as.data.frame() %>%
+  dplyr::mutate(GO = ifelse(grepl("MSTRG",ENSEMBL),"GO:13030",GO))
+
+test <- go_annotations %>%
+  dplyr::group_by(GO) %>%
+  dplyr::summarise(count = n()) %>%
+  dplyr::arrange(desc(count)) %>%
+  dplyr::mutate(go_term = c(mapIds(GO.db, keys = GO, column = "DEFINITION", keytype = "GOID")))
+
+
+```
 
 ## RMS Tumoroid PCA
 
@@ -331,6 +512,31 @@ rv <- rowVars(canon_genes)
        width = 6)
 ```
 
+No difference in tumoroid data, as expected
+```{r}
+vsd_subset <- assay(tumoroid_vsd)[which(rownames(assay(tumoroid_vsd)) %in% biotype_bare_necs$gene_id),]
+
+rv <- rowVars(assay(tumoroid_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(tumoroid_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
 ## RMS combined PCA
 
 ```{r load data}
@@ -412,6 +618,9 @@ write.table(combined_arms, file = paste(savedir,"RMS_FP_combined_res.txt",sep = 
 ```
 
 ```{r create PCA}
+combined_dds <- readRDS(paste(savedir,paste0(tumor_type,"_DESEQ_combined_subtype.RDS"), sep = "/"))
+
+combined_vsd <- DESeq2::vst(combined_dds, blind = F)
 
 canon_genes <- assay(combined_vsd)[which(grepl("ENSG",rownames(assay(combined_vsd)))),]
 novel_genes <- assay(combined_vsd)[which(grepl("MSTRG",rownames(assay(combined_vsd)))),]
@@ -489,6 +698,87 @@ rv <- rowVars(canon_genes)
        height = 6,
        width = 6)
 ```
+
+Use the different levels created for **Dissect the PCA**
+
+Strict removal
+```{r}
+vsd_subset <- assay(combined_vsd)[which(rownames(assay(combined_vsd)) %in% biotype_bare_necs$gene_id),]
+
+rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+Arbitrary
+```{r}
+vsd_subset <- assay(combined_vsd)[which(rownames(assay(combined_vsd)) %in% biotype_arbitrary$gene_id),]
+
+rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+only remove smRNAs
+```{r}
+vsd_subset <- assay(combined_vsd)[which(rownames(assay(combined_vsd)) %in% biotype_big_rna$gene_id),]
+
+rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+
+```
+
+
+The PCA is still weird here, mostly clustering on a technical level. Maybe underlines that RNA-seq of tumoroid and patient cannot be really compared with each other.
+
 
 # Heatmaps
 
@@ -623,6 +913,8 @@ table(row.names(tumoroid_sig) %in% pass_canon[which(pass_canon$pass == T),]$gene
 
 ```
 
+## upset plots
+
 ```{r create upset plot}
 
 genes_novel_list <- list(`RMS-specific genes` = pass_novel[which(pass_novel$pass == T),]$gene_id,
@@ -691,3 +983,24 @@ draw(ComplexHeatmap::UpSet(m,
                       ))
 dev.off()
 ```
+
+# Nouveau box plots
+
+```{r load data for plots}
+tumor_dds <- readRDS()
+tumoroid_dds <- readRDS()
+```
+
+```{r tumoroid }
+
+
+
+```
+
+# Heatmaps
+
+```{r load data for plots}
+
+```
+
+```{r}
