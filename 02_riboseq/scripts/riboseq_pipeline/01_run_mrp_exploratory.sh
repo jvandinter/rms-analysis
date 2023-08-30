@@ -98,7 +98,7 @@ done
 #
 ################################################################################
 
-mkdir -p ${project_folder}/log/${run_id}/{trimgalore,bowtie2,star_align,riboseqc} data/processed
+mkdir -p ${project_folder}/log/${run_id}/{trimgalore,bowtie2,star_align,riboseqc}
 
 echo -e "\n ====== `date` Map Riboseq Pipeline ====== \n"
 
@@ -196,10 +196,29 @@ riboseqc_jobid+=($(sbatch --parsable \
 
 info "RiboseQC jobid: ${riboseqc_jobid}"
 
+echo -e "\n`date` Creating RiboseQC reports ..."
+echo -e "====================================================================================== \n"
+
+# 5. RiboseQC report. 
+
+riboreport_jobid=()
+
+riboreport_jobid+=($(sbatch --parsable \
+  --mem=48G \
+  --cpus-per-task=1 \
+  --time=24:00:00 \
+  --job-name=${run_id}.riboreport \
+  --output=${project_folder}/log/${run_id}/riboreport.out \
+  --export=ALL \
+  ${scriptdir}/mrp_riboseqc_report.sh
+))
+
+info "RiboseQC report jobid: ${riboreport_jobid}"
+
 echo -e "\n`date` Creating MultiQC reports ..."
 echo -e "====================================================================================== \n"
 
-# 5. MultiQC.
+# 6. MultiQC.
 
 # multiqc_jobid=()
 

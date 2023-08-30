@@ -49,9 +49,8 @@ riboseqc_analysis <- function(bam,rannot, targetdir) {
                         readlength_choice_method = "max_coverage",
                         dest_names = targetdir,
                         rescue_all_rls = FALSE, fast_mode = F,
-                        create_report = T, sample_names = NA,
-                        report_file = targetdir, extended_report = F,
-                        pdf_plots = T)
+                        create_report = F, sample_names = NA,
+                        report_file = targetdir)
 
       message("Successfully executed the call.")
 
