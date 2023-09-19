@@ -30,7 +30,7 @@ echo "`date` calling ORFs for ${sample_id}"
 cd "${outdir}/"
 mkdir -p "ORFquant/${sample_id}/"
 
-apptainer exec -B "/hpc:/hpc" --env LC_CTYPE="en_US.UTF-8" ${container_dir}/orfquant-4.1.2.sif Rscript "${scriptdir}/mrp_orfquant.R" \
+apptainer exec -B "/hpc:/hpc" --env LC_CTYPE="en_US.UTF-8" ${container_dir}/orfquant-4.1.2a.sif Rscript "${scriptdir}/mrp_orfquant.R" \
   ${outdir} \
   "${outdir}/RiboseQC/${sample_id}/${sample_id}_for_ORFquant" \
   "${sample_id}" \

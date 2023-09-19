@@ -18,7 +18,7 @@ thresholds <- c(0,0.2, 0.4, 0.6, 0.8, 0.9, 1)
 orf_methods <- c("ORFquant", "PRICE", "Ribo-TISH", "Ribotricer")
 
 orfquant_files = list.files(paste(wd,"analysis","ORFquant", sep = "/"),
-                            pattern = "*TIS*final_ORFquant_results",
+                            pattern = ".*TIS.*final_ORFquant_results",
                             recursive = T,
                             full.names = T)
 
@@ -452,14 +452,12 @@ gtf_ref <- GTF_annotation$cds_txs %>% as.data.frame() %>%
 
 message(paste(Sys.time(),"Preparing separate ORFs ..."))
 
-#orfquant_orfs <- prepare_orfs(orfquant_files, orf_methods[1], 2)
+orfquant_orfs <- prepare_orfs(orfquant_files, orf_methods[1], 2)
 
-#save(orfquant_orfs, 
-#     file = paste0(savedir, "/orfs_separate.RData"))
+save(orfquant_orfs, 
+     file = paste0(savedir, "/patient/orfs_separate.RData"))
 
 message(paste(Sys.time(),"Preparing combined ORFs ..."))
-
-load(paste0(savedir, "/patient/orfs_separate.RData"))
 
 orfquant_orfs_combined <- get_combined_orfs(orfquant_orfs, orfquant_files)
 

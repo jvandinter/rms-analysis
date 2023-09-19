@@ -35,9 +35,9 @@ paths <- c(package_install_loc,.libPaths())
 .libPaths(paths)
 
 # Define variables --------------------------------------------------------
-html_report = paste0(wd,"/analysis/ORFquant/",sample_id,"/",sample_id,"_report.html")
-ORFquant_out = paste0(wd,"/analysis/ORFquant/",sample_id,"/",sample_id)
-ORFquant_output_file = paste0(wd,"/analysis/ORFquant/",sample_id,"/",sample_id,"_final_ORFquant_results")
+html_report = paste0(wd,"/ORFquant/",sample_id,"/",sample_id,"_report.html")
+ORFquant_out = paste0(wd,"/ORFquant/",sample_id,"/",sample_id)
+ORFquant_output_file = paste0(wd,"/ORFquant/",sample_id,"/",sample_id,"_final_ORFquant_results")
 ORFquant_plot_data = paste0(ORFquant_output_file, "_plots/",sample_id,"_ORFquant_plots_RData")
 find_pandoc(dir = pandoc_dir)
 

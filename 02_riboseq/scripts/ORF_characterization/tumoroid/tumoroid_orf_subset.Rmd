@@ -25,10 +25,10 @@ library(Gviz)
 savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results"
 txome_gtf = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.gtf"
 txome_rannot = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_container/RMS_full_novel_filtered_corrected.gtf_Rannot"
-orf_combined = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/patient/orfs_combined.RData"
-orf_overlap = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/patient/orfs_overlap.RData"
-orf_separate = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/patient/orfs_separate.RData"
-sample_ids <- gsub("-.*","",grep("TIS",basename(list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F)), value = T))
+orf_combined = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/tumoroid/tumoroid_orfs_combined.RData"
+orf_overlap = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/tumoroid/tumoroid_orfs_overlap.RData"
+orf_separate = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/tumoroid/tumoroid_orfs_separate.RData"
+sample_ids <- gsub("-.*","",grep("ORG",basename(list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F)), value = T))
 ```
 
 ```{r functions}

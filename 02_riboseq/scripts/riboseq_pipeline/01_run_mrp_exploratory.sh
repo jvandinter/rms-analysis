@@ -98,8 +98,6 @@ done
 #
 ################################################################################
 
-mkdir -p ${project_folder}/log/${run_id}/{trimgalore,bowtie2,star_align,riboseqc}
-
 echo -e "\n ====== `date` Map Riboseq Pipeline ====== \n"
 
 echo -e "\n`date` Filtering and trimming ..."
@@ -209,6 +207,7 @@ riboreport_jobid+=($(sbatch --parsable \
   --time=24:00:00 \
   --job-name=${run_id}.riboreport \
   --output=${project_folder}/log/${run_id}/riboreport.out \
+  --dependency=afterok:${riboseqc_jobid} \
   --export=ALL \
   ${scriptdir}/mrp_riboseqc_report.sh
 ))
