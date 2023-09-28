@@ -29,6 +29,7 @@ orf_combined = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/
 orf_overlap = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/patient/orfs_overlap.RData"
 orf_separate = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/patient/orfs_separate.RData"
 sample_ids <- gsub("-.*","",grep("TIS",basename(list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F)), value = T))
+fasta_locs = grep("TIS",list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F), value = T)
 ```
 
 ```{r functions}
@@ -381,6 +382,8 @@ filter_orfs <- function(m_overlap, m_orfs) {
 }
 ```
 
+# Generate ORF data
+
 This code block creates reference info for our little ORFs
 
 ```{r GTF based reference}
@@ -541,10 +544,12 @@ test_orfs <- orf_df %>%
 
 ```{r write table}
 
-write.table(interesting_orfs, file = paste(savedir,"patient","RMS_patient_novel_ORF.txt",sep="/"), quote = F, row.names = F, sep =";")
+write.table(interesting_orfs, file = paste(savedir,"patient","RMS_patient_all_ORFs.txt",sep="/"), quote = F, row.names = F, sep =";")
 
 
 ```
+
+# ORF data
 
 Create a new DF with a single row per ORF, aggregate P-value and P-site
 
@@ -562,39 +567,47 @@ single_orf <- interesting_orfs %>%
 
 ```
 
-# PLOTS
+# Generate FASTA
 
-## ORF count distribution
+```{r tumoroid FASTA}
+fasta_locs = grep("TIS",list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", 
+                                  recursive = F), value = T)
+savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results"
+filtered_interesting_orfs = read.delim(paste(savedir,"patient","RMS_patient_all_ORFs.txt",sep="/"), sep =";")
+savefile = paste(savedir,"patient","patient_sequence_table.txt", sep = "/")
 
-```{r plot }
-single_orf %>% dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","lncORF","dORF"))) %>%
-  ggplot(aes(x = count, fill = orf_type)) +
-  geom_histogram(stat = "count") +
-  scale_x_continuous(breaks = 2:19) +
-  facet_wrap(~ orf_type, scales = "free_y") +
-  theme_classic()
+# code to extract all proteins from the file(s)
+processed_ids <- character(0)
+matching_seq <- character(0)
+sequence_table <- data.frame(orf_id = character(0), sequence = character(0), width = integer(0), names = character(0), stringsAsFactors = FALSE)
 
-ggsave(filename = "",
-       device = "pdf",
-       height =,
-       width =,
-       path = savedir)
+for (i in 1:nrow(filtered_interesting_orfs)) {
+  id <- filtered_interesting_orfs$orf_id[i]
+  source_file_number <- filtered_interesting_orfs$source[i]
+  if (!(id %in% processed_ids)) {
+    fasta_file <- list.files(grep(source_file_number,fasta_locs, value = T), pattern = "fasta", full.names = T)
+    fasta <- Biostrings::readAAStringSet(fasta_file)
+    matching_fasta <- fasta[grepl(id, names(fasta))]
+    # Extract sequences, widths, and names
+    matching_sequences <- as.character(matching_fasta)
+    matching_widths <- width(matching_fasta)
+    matching_names <- names(matching_fasta)
+    # Add the extracted data to the sequence_table data frame
+    if (length(matching_sequences) > 0) {
+      new_rows <- data.frame(orf_id = id, sequence = matching_sequences, width = matching_widths, names = matching_names, stringsAsFactors = FALSE)
+      sequence_table <- rbind(sequence_table, new_rows)
+    }
+    processed_ids <- c(processed_ids, id)
+  }
+}
 
-single_orf %>% dplyr::filter(pass == T)  %>%
-  dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","dORF"))) %>%
-  ggplot(aes(x = count, fill = orf_type)) +
-  geom_histogram(stat = "count") +
-  scale_x_continuous(breaks = 2:19) +
-  facet_wrap(~ orf_type, scales = "free_y") +
-  theme_classic()
+patient_fa <- Biostrings::AAStringSet(sequence_table[,c("sequence")])
+names(patient_fa) <- sequence_table[,c("names")]
 
-single_orf %>% dplyr::filter(fp == T & pass == T)  %>%
-  dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","dORF"))) %>%
-  ggplot(aes(x = count, fill = orf_type)) +
-  geom_histogram(stat = "count") +
-  scale_x_continuous(breaks = 2:19) +
-  facet_wrap(~ orf_type, scales = "free_y") +
-  theme_classic()
+Biostrings::writeXStringSet(patient_fa, filepath = paste(savedir,"patient","patient_ORFs.fa", sep = "/"),
+                            format = "fasta")
+write.table(x = sequence_table, file = savefile,quote=F,sep="\t", row.names = F)
+
 ```
 
 ## ORFquant loci
@@ -638,5 +651,51 @@ matching_indices <- grep(orf, names(protein_seqs), value = T)
 protein_seq_of_interest_a = protein_seqs[[matching_indices]]
 protein_seq_of_interest_b = protein_seqs[[matching_indices]]
 protein_seq_of_interest_c = protein_seqs[[matching_indices]]
+
+```
+
+```{r fasta seq}
+
+# code to extract all proteins from the file(s)
+processed_ids <- character(0)
+matching_seq <- character(0)
+sequence_table <- data.frame(orf_id = character(0), sequence = character(0), width = integer(0), names = character(0), stringsAsFactors = FALSE)
+filtered_interesting_orfs <- interesting_orfs %>%
+  replace(is.na(x = .), "c") %>%
+  dplyr::filter(!(class_code == "k"))
+for (i in 1:nrow(filtered_interesting_orfs)) {
+  id <- filtered_interesting_orfs$orf_id[i]
+  source_file_number <- filtered_interesting_orfs$source[i]
+  if (!(id %in% processed_ids)) {
+    fasta_file <- list.files(grep(source_file_number,fasta_locs, value = T), pattern = "fasta", full.names = T)
+    fasta <- Biostrings::readAAStringSet(fasta_file)
+    matching_fasta <- fasta[grepl(id, names(fasta))]
+    # Extract sequences, widths, and names
+    matching_sequences <- as.character(matching_fasta)
+    matching_widths <- width(matching_fasta)
+    matching_names <- names(matching_fasta)
+    # Add the extracted data to the sequence_table data frame
+    if (length(matching_sequences) > 0) {
+      new_rows <- data.frame(orf_id = id, sequence = matching_sequences, width = matching_widths, names = matching_names, stringsAsFactors = FALSE)
+      sequence_table <- rbind(sequence_table, new_rows)
+    }
+    processed_ids <- c(processed_ids, id)
+  }
+}
+
+```
+
+## Subset on interesting proteins
+
+```{r}
+
+tis_seq_table <- read.delim(file = paste(savedir,"patient/patient_sequence_table.txt", sep = "/")) %>%
+  dplyr::filter(width > 18 & width < 150)
+
+patient_fa <- Biostrings::AAStringSet(tis_seq_table[,c("sequence")])
+names(patient_fa) <- tis_seq_table[,c("names")]
+
+Biostrings::writeXStringSet(patient_fa, filepath = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/03_prediction/data/patient_sORF.fa",
+                            format = "fasta")
 
 ```

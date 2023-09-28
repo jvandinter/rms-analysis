@@ -15,10 +15,6 @@ library(GenomicRanges)
 library(magrittr)
 library(data.table)
 library(ggplot2)
-library(ORFquant)
-library(lemon)
-library(Gviz)
-
 ```
 
 ```{r parameters}
@@ -29,6 +25,7 @@ orf_combined = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/
 orf_overlap = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/tumoroid/tumoroid_orfs_overlap.RData"
 orf_separate = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results/tumoroid/tumoroid_orfs_separate.RData"
 sample_ids <- gsub("-.*","",grep("ORG",basename(list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F)), value = T))
+fasta_locs = grep("ORG",list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F), value = T)
 ```
 
 ```{r functions}
@@ -451,7 +448,7 @@ orfs_keep <- filter_orfs(m_overlap = orfquant_overlap,
                       m_orfs = orfquant_orfs_combined) %>%
   dplyr::mutate(orf_id = row.names(.))
 
-mat <- orfquant_overlap[,grepl("1_",colnames(orfquant_overlap))]
+mat <- orfquant_overlap[,grepl("^1_",colnames(orfquant_overlap))]
 rownames(mat) <- names(orfquant_orfs_combined) 
 
 mat <- as.data.frame(mat) %>%
@@ -513,7 +510,7 @@ interesting_orfs <- orf_df %>%
   dplyr::mutate(pass = ifelse(gene_id %in% c(rms_canon_pass$gene_id,
                                              rms_novel_pass$gene_id),T,F),
                 fp = ifelse(gene_id %in% row.names(rms_fp_pass),T,F),
-                source = c(150:161,163:169)[source]) %>%
+                source = sample_ids[source]) %>%
   dplyr::distinct()
 
 ```
@@ -541,7 +538,7 @@ test_orfs <- orf_df %>%
 
 ```{r write table}
 
-write.table(interesting_orfs, file = paste(savedir,"patient","RMS_patient_novel_ORF.txt",sep="/"), quote = F, row.names = F, sep =";")
+write.table(interesting_orfs, file = paste(savedir,"tumoroid","RMS_tumoroid_all_ORFs.txt",sep="/"), quote = F, row.names = F, sep =";")
 
 
 ```
@@ -549,7 +546,7 @@ write.table(interesting_orfs, file = paste(savedir,"patient","RMS_patient_novel_
 Create a new DF with a single row per ORF, aggregate P-value and P-site
 
 ```{r Parse ORF data}
-interesting_orfs <- read.delim(paste(savedir,"patient","RMS_patient_novel_ORF.txt",sep="/"), sep =";")
+interesting_orfs <- read.delim(paste(savedir,"tumoroid","RMS_tumoroid_all_ORFs.txt",sep="/"), sep =";")
 
 single_orf <- interesting_orfs %>%
   dplyr::group_by(orf_id) %>%
@@ -567,10 +564,19 @@ single_orf <- interesting_orfs %>%
 ## ORF count distribution
 
 ```{r plot }
-single_orf %>% dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","lncORF","dORF"))) %>%
+single_orf %>% dplyr::mutate(orf_type = ifelse(!(orf_type %in% c("uORF","novel","lncORF","dORF","ORF_annotated")),
+                                               "other",orf_type)
+  dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","ORF_annotated","dORF","novel","lncORF","other"))) %>%
   ggplot(aes(x = count, fill = orf_type)) +
   geom_histogram(stat = "count") +
-  scale_x_continuous(breaks = 2:19) +
+  scale_x_continuous(breaks = length(sample_ids)) +
+  facet_wrap(~ orf_type, scales = "free_y") +
+  theme_classic()
+
+single_orf %>% dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","lncORF","dORF","ORF_annotated"))) %>%
+  ggplot(aes(x = count, fill = orf_type)) +
+  geom_density() +
+  scale_x_continuous(breaks = length(sample_ids)) +
   facet_wrap(~ orf_type, scales = "free_y") +
   theme_classic()
 
@@ -581,62 +587,116 @@ ggsave(filename = "",
        path = savedir)
 
 single_orf %>% dplyr::filter(pass == T)  %>%
-  dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","dORF"))) %>%
+  dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","lncORF","dORF","ORF_annotated"))) %>%
   ggplot(aes(x = count, fill = orf_type)) +
   geom_histogram(stat = "count") +
-  scale_x_continuous(breaks = 2:19) +
+  scale_x_continuous(breaks = 2:length(sample_ids)) +
   facet_wrap(~ orf_type, scales = "free_y") +
   theme_classic()
 
 single_orf %>% dplyr::filter(fp == T & pass == T)  %>%
-  dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","dORF"))) %>%
+  dplyr::mutate(orf_type = factor(orf_type, levels = c("uORF","novel","lncORF","dORF","ORF_annotated"))) %>%
   ggplot(aes(x = count, fill = orf_type)) +
   geom_histogram(stat = "count") +
-  scale_x_continuous(breaks = 2:19) +
+  scale_x_continuous(breaks = 2:length(sample_ids)) +
   facet_wrap(~ orf_type, scales = "free_y") +
   theme_classic()
 ```
 
-## ORFquant loci
+# FASTA
 
-```{r ORFquant plot}
-gene = "ENSG00000233369"
-sample = "160"
-orfquant_results = list.files(path = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant/",
-                             pattern = paste0(".*",sample,".*_final_ORFquant_results"), full.names = T, recursive = T)
-bam_files = ""
-plotfile=paste(savedir,paste0(gene,"_plot.pdf"), sep = "/")
+```{r tumoroid FASTA}
+fasta_locs = grep("ORG",list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F), value = T)
+savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results"
+interesting_orfs = read.delim(paste(savedir,"tumoroid","RMS_tumoroid_all_ORFs.txt",sep="/"), sep =";")
+savefile = paste(savedir,"tumoroid","tumoroid_sequence_table.txt", sep = "/")
 
-load(orfquant_results)
+# code to extract all proteins from the file(s)
+processed_ids <- character(0)
+matching_seq <- character(0)
+sequence_table <- data.frame(orf_id = character(0), sequence = character(0), width = integer(0), names = character(0), stringsAsFactors = FALSE)
+filtered_interesting_orfs <- interesting_orfs %>%
+  replace(is.na(x = .), "c") %>%
+  dplyr::filter(!(class_code == "k"))
 
-plot_orfquant_locus(locus = gene,
-                              orfquant_results = ORFquant_results,
-                              bam_files = bam_files,
-                              plotfile = plotfile)
+for (i in 1:nrow(filtered_interesting_orfs)) {
+  id <- filtered_interesting_orfs$orf_id[i]
+  source_file_number <- filtered_interesting_orfs$source[i]
+  if (!(id %in% processed_ids)) {
+    fasta_file <- list.files(grep(source_file_number,fasta_locs, value = T), pattern = "fasta", full.names = T)
+    fasta <- Biostrings::readAAStringSet(fasta_file)
+    matching_fasta <- fasta[grepl(id, names(fasta))]
+    # Extract sequences, widths, and names
+    matching_sequences <- as.character(matching_fasta)
+    matching_widths <- width(matching_fasta)
+    matching_names <- names(matching_fasta)
+    # Add the extracted data to the sequence_table data frame
+    if (length(matching_sequences) > 0) {
+      new_rows <- data.frame(orf_id = id, sequence = matching_sequences, width = matching_widths, names = matching_names, stringsAsFactors = FALSE)
+      sequence_table <- rbind(sequence_table, new_rows)
+    }
+    processed_ids <- c(processed_ids, id)
+  }
+}
+
+tumoroid_fa <- Biostrings::AAStringSet(sequence_table[,c("sequence")])
+names(tumoroid_fa) <- sequence_table[,c("names")]
+
+Biostrings::writeXStringSet(tumoroid_fa, filepath = paste(savedir,"tumoroid","tumoroid_ORFs.fa", sep = "/"),
+                            format = "fasta")
+write.table(x = sequence_table, file = savefile,quote=F,sep="\t", row.names = F)
+
 ```
 
-Collect protein sequence from single gene
+add missing files
+```{r}
+filtered_interesting_orfs <- interesting_orfs[!(interesting_orfs$orf_id %in% sequence_table$orf_id),]
 
-- Loaded in **interesting_orfs**
-- 
+# code to extract all proteins from the file(s)
+processed_ids <- character(0)
+matching_seq <- character(0)
+sequence_table <- data.frame(orf_id = character(0), sequence = character(0), width = integer(0), names = character(0), stringsAsFactors = FALSE)
+
+for (i in 1:nrow(filtered_interesting_orfs)) {
+  id <- filtered_interesting_orfs$orf_id[i]
+  source_file_number <- filtered_interesting_orfs$source[i]
+  if (!(id %in% processed_ids)) {
+    fasta_file <- list.files(grep(source_file_number,fasta_locs, value = T), pattern = "fasta", full.names = T)
+    fasta <- Biostrings::readAAStringSet(fasta_file)
+    matching_fasta <- fasta[grepl(id, names(fasta))]
+    # Extract sequences, widths, and names
+    matching_sequences <- as.character(matching_fasta)
+    matching_widths <- width(matching_fasta)
+    matching_names <- names(matching_fasta)
+    # Add the extracted data to the sequence_table data frame
+    if (length(matching_sequences) > 0) {
+      new_rows <- data.frame(orf_id = id, sequence = matching_sequences, width = matching_widths, names = matching_names, stringsAsFactors = FALSE)
+      sequence_table <- rbind(sequence_table, new_rows)
+    }
+    processed_ids <- c(processed_ids, id)
+  }
+}
+
+tumoroid_fa <- Biostrings::AAStringSet(sequence_table[,c("sequence")])
+names(tumoroid_fa) <- sequence_table[,c("names")]
+
+Biostrings::writeXStringSet(tumoroid_fa, filepath = paste(savedir,"tumoroid","tumoroid_missed_ORFs.fa", sep = "/"),
+                            format = "fasta")
+write.table(x = sequence_table, file = paste(savedir,"tumoroid","tumoroid_missed_seqs.txt"),quote=F,sep="\t", row.names = F)
+```
+
+
+## Subset on interesting proteins
 
 ```{r}
 
-# Try to make it work for 1 ORF
+tum_seq_table <- read.delim(file = paste(savedir,"tumoroid/tumoroid_sequence_table.txt", sep = "/"), sep = " ") %>%
+  dplyr::filter(width > 18 & width < 201)
 
-orf = "MSTRG.31321.1_128_346"
+tumoroid_fa <- Biostrings::AAStringSet(tum_seq_table[,c("sequence")])
+names(tumoroid_fa) <- tum_seq_table[,c("names")]
 
-samples_with_orf = interesting_orfs[which(interesting_orfs$orf_id == orf),"source"]
-
-fasta = list.files(path = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant/",
-                   pattern = paste0(".*","165",".*_Protein_sequences.fasta"), full.names = T, recursive = T)
-
-protein_seqs = Biostrings::readAAStringSet(fasta)
-matching_indices <- grep(orf, names(protein_seqs), value = T)
-
-# These all match
-protein_seq_of_interest_a = protein_seqs[[matching_indices]]
-protein_seq_of_interest_b = protein_seqs[[matching_indices]]
-protein_seq_of_interest_c = protein_seqs[[matching_indices]]
+Biostrings::writeXStringSet(tumoroid_fa, filepath = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/03_prediction/data/tumoroid_sORF.fa",
+                            format = "fasta")
 
 ```
