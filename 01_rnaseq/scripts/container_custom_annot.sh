@@ -5,9 +5,7 @@
 #SBATCH --gres=tmpspace:50G
 #SBATCH --time=24:00:00
 
-srun -c 1 --mem 10G --gres=tmpspace:50G --time=24:00:00 --pty bash
-
-scriptdir="/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/scripts/container"
+scriptdir="/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/scripts"
 
 outdir="/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline"
 

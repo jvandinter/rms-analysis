@@ -4,12 +4,15 @@
 
 # Ignore all files named .DS_Store or ending with .log
 **/.DS_Store
+**/_.*
+**/\\._.*
 **.log
 **.out
 # Ignore files from analysis and data
 **/data/*
 **/analysis/*
 **/results/*
+03_prediction/scripts/netMHCpan/python_env/
 
 # Include script files
 !**/scripts/*
