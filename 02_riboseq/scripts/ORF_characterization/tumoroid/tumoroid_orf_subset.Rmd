@@ -690,13 +690,22 @@ write.table(x = sequence_table, file = paste(savedir,"tumoroid","tumoroid_missed
 
 ```{r}
 
+prio_orf <- single_orf %>%
+  replace(is.na(x = .), "c") %>%
+  dplyr::filter(orf_category %in% c("uORF","dORF","novel","lncORF") &
+                    !(class_code == "k"))
+
 tum_seq_table <- read.delim(file = paste(savedir,"tumoroid/tumoroid_sequence_table.txt", sep = "/"), sep = " ") %>%
-  dplyr::filter(width > 18 & width < 201)
+  dplyr::filter(width > 18 & 
+                  width < 151 &
+                  orf_id %in% prio_orf$orf_id)
+
+sum(tum_seq_table$width)
 
 tumoroid_fa <- Biostrings::AAStringSet(tum_seq_table[,c("sequence")])
-names(tumoroid_fa) <- tum_seq_table[,c("names")]
+names(tumoroid_fa) <- gsub("\\|.*","",tum_seq_table[,c("names")])
 
-Biostrings::writeXStringSet(tumoroid_fa, filepath = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/03_prediction/data/tumoroid_sORF.fa",
+Biostrings::writeXStringSet(tumoroid_fa, filepath = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/03_prediction/data/tumoroid_sORF.fasta",
                             format = "fasta")
 
 ```

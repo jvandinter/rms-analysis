@@ -159,6 +159,19 @@ p_sites_list <- c(ORFq_P_sites_plus,
                   ORFq_P_sites_minus_FP,
                   ORFq_P_sites_minus_FP_avg)
 
+p_sites_names <- c("sum P-sites +",
+                   "~ P-sites +",
+                   "sum FN P-sites +",
+                   "~ FN P-sites +",
+                   "sum FP P-sites +",
+                   "~ FP P-sites +",
+                   "sum P-sites -",
+                   "~ P-sites -",
+                   "sum FN P-sites -",
+                   "~ FN P-sites -",
+                   "sum FP P-sites -",
+                   "~ FP P-sites -")
+
 # Load data created by orf_callers_comparison.Rmd
 load(paste(savedir,"tumoroid","tumoroid_orfs_separate.RData", sep = "/"))
 
@@ -452,10 +465,18 @@ ggsave(filename = "FP_SPEC_ORF_Psite_per_AA.pdf",
 
 ### Declare tracks
 ```{r}
+# Run once
 p_sites_data_list <- lapply(p_sites_list,get_psite_data)
+saveRDS(p_sites_data_list, file = paste(savedir,"tumoroid","psite_data.RDS", sep = "/"))
 
-dtrack_ORFq_Psites_plus <- DataTrack(range=ORFq_P_sites_plus_data,
-                                     name = "P-sites +",
+```
+
+Need some repetition, as it didnt really work out
+
+```{r}
+
+dtrack_sum_plus <- DataTrack(range=p_sites_data_list[[1]],
+                                     name = p_sites_names[1],
                                      type = "h",
                                      ylim = c(0,25000),
                                      col.axis = "black",
@@ -469,8 +490,8 @@ dtrack_ORFq_Psites_plus <- DataTrack(range=ORFq_P_sites_plus_data,
                                      col = colors[2],
                                      lwd = 1)
 
-dtrack_ORFq_Psites_minus <- DataTrack(range=ORFq_P_sites_minus_data,
-                                     name = "P-sites -",
+dtrack_avg_plus <- DataTrack(range=p_sites_data_list[[2]],
+                                     name = p_sites_names[2],
                                      type = "h",
                                      ylim = c(0,25000),
                                      col.axis = "black",
@@ -484,11 +505,163 @@ dtrack_ORFq_Psites_minus <- DataTrack(range=ORFq_P_sites_minus_data,
                                      col = colors[2],
                                      lwd = 1)
 
+dtrack_sum_FN_plus <- DataTrack(range=p_sites_data_list[[3]],
+                                     name = p_sites_names[3],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+dtrack_avg_FN_plus <- DataTrack(range=p_sites_data_list[[4]],
+                                     name = p_sites_names[4],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+dtrack_sum_FP_plus <- DataTrack(range=p_sites_data_list[[5]],
+                                     name = p_sites_names[5],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+dtrack_avg_FP_plus <- DataTrack(range=p_sites_data_list[[6]],
+                                     name = p_sites_names[6],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+dtrack_sum_min <- DataTrack(range=p_sites_data_list[[7]],
+                                     name = p_sites_names[7],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+dtrack_avg_min <- DataTrack(range=p_sites_data_list[[8]],
+                                     name = p_sites_names[8],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+
+dtrack_sum_FN_min <- DataTrack(range=p_sites_data_list[[9]],
+                                     name = p_sites_names[9],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+
+dtrack_avg_FN_min <- DataTrack(range=p_sites_data_list[[10]],
+                                     name = p_sites_names[10],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+
+dtrack_sum_FP_min <- DataTrack(range=p_sites_data_list[[11]],
+                                     name = p_sites_names[11],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
+
+dtrack_avg_FP_min <- DataTrack(range=p_sites_data_list[[12]],
+                                     name = p_sites_names[12],
+                                     type = "h",
+                                     ylim = c(0,25000),
+                                     col.axis = "black",
+                                     col = NULL,
+                                     col.title = "black",
+                                     yTicksAt = c(0, 25000),
+                                     groups = c(1,2,3),
+                                     col = c(colors[2], colors[1], colors[3]),
+                                     background.panel = "#f5f9fc",
+                                     fill.histogram = colors[2],
+                                     col = colors[2],
+                                     lwd = 1)
 ```
 
 ### Plot ORF loci
 
-```{r, fig.height = 2.2, fig.width = 3}
+```{r}
 gene_id = "MSTRG.26303"
 transcript_id = paste0(gene_id,".2")
 
@@ -507,32 +680,116 @@ ORF_track_ORFq <- AnnotationTrack(orfq_transcripts, genome = gen, showId = F,
                                   shape = "box", name = "ORF\nlocus", 
                                   fill = "cornflowerblue", 
                                   col = "cornflowerblue", rotation.title = 0)
+```
 
-# P sites data tracks
-displayPars(dtrack_ORFq_Psites_plus) <- 
-  list(ylim = c(0,50), # Change tick marks
-       col = c(colors[2], colors[1], colors[3]), 
-       groups = c("+1", "+2", "+3"), legend=F)
-displayPars(dtrack_ORFq_Psites_minus) <- 
-  list(ylim = c(0,50), # Change tick marks
-       col = c(colors[2], colors[1], colors[3]), 
-       groups = c("+1", "+2", "+3"), legend=F)
+```{r plot function}
 
-pdf(paste(savedir,"tumoroid","figures", "p_sites", paste0(gene_id,".pdf"),sep="/"), width = 9.5, height = 4.16)
+plot_orf_locus <- function(track_plus,
+                           track_minus,
+                           psite_max = 50,
+                           prefix = "",
+                           gene_id,
+                           ORF_track_ORFq = ORF_track_ORFq,
+                           transcript_track = transcript_track
+         ) {
+  # P sites data tracks
+  displayPars(track_plus) <- 
+    list(ylim = c(0, psite_max),
+         yTicksAt = c(0, psite_max), # Change tick marks
+         col = c(colors[2], colors[1], colors[3]),
+         groups = c("+1", "+2", "+3"), 
+         legend=F
+         )
+  displayPars(track_minus) <- 
+    list(ylim = c(0,psite_max),
+         yTicksAt = c(0,psite_max), # Change tick marks
+         col = c(colors[2], colors[1], colors[3]), 
+         groups = c("+1", "+2", "+3"), 
+         legend=F
+         )
+  
+  pdf(paste(savedir,"tumoroid","figures", "p_sites", paste0(prefix,"_",gene_id,".pdf"),sep="/"), width = 9.5, height = 4.16)
+  
+  plotTracks(list(track_plus,
+                  track_minus,
+                  ORF_track_ORFq,
+                  transcript_track), 
+             from = start_pos - 500, 
+             to = end_pos + 500, showExonId=F, chromosome = chr, stacking = "squish", 
+             collapse = FALSE, 
+             sizes = c(0.2,0.2,0.05,0.3),
+             geneSymbols = T, transcriptAnnotation = "transcript_id", 
+             col.title = "black", background.title = "white", strand = "+",
+             add35=T, showTitle=T, cex.title = 0.8, cex.axis = 0.5)
+  dev.off()
+}
+```
 
-plotTracks(list(dtrack_ORFq_Psites_plus,
-                dtrack_ORFq_Psites_minus,
-                ORF_track_ORFq,
-                transcript_track), 
-           from = start_pos - 500, 
-           to = end_pos + 500, showExonId=F, chromosome = chr, stacking = "squish", 
-           collapse = FALSE, 
-           sizes = c(0.2,0.2,0.05,0.3),
-           geneSymbols = T, transcriptAnnotation = "transcript_id", 
-           col.title = "black", background.title = "white", strand = "+",
-           add35=T, showTitle=T, cex.title = 0.8, cex.axis = 0.5)
-dev.off()
+#### Sum ALL
 
+#### AVG ALL
+
+```{r}
+plot_orf_locus(track_plus = dtrack_avg_plus,
+               track_minus = dtrack_avg_min,
+               psite_max = 5,
+               prefix = "avg",
+               gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
+```
+
+#### SUM FP
+
+```{r}
+plot_orf_locus(track_plus = dtrack_sum_FP_plus,
+               track_minus = dtrack_sum_FP_min,
+               psite_max = 50,
+               prefix = "FP_sum",
+               gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
+```
+
+#### SUM FN
+
+```{r}
+plot_orf_locus(track_plus = dtrack_sum_FN_plus,
+               track_minus = dtrack_sum_FN_min,
+               psite_max = 50,
+               prefix = "FN_sum",
+               gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
+```
+
+#### AVG FP
+
+```{r}
+plot_orf_locus(track_plus = dtrack_avg_FP_plus,
+               track_minus = dtrack_avg_FP_min,
+               psite_max = 5,
+               prefix = "FP_avg",
+               gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
+```
+
+##### AVG FN
+
+```{r}
+plot_orf_locus(track_plus = dtrack_avg_FN_plus,
+               track_minus = dtrack_avg_FN_min,
+               psite_max = 5,
+               prefix = "FN_avg",
+               gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
 ```
 
 # PATIENT
