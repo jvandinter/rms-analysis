@@ -12,8 +12,8 @@
 **/data/*
 **/analysis/*
 **/results/*
-03_prediction/scripts/netMHCpan/python_env/
-
+03_prediction/tumoroid/scripts/netMHCpan/python_env/
+03_prediction/tumoroid/scripts/netMHCpan/python_env/
 # Include script files
 !**/scripts/*
 !**/documentation/*
