@@ -1,0 +1,187 @@
+---
+title: "RMS_quant_metadata"
+author: "JD"
+date: "2023-11-02"
+output: html_document
+---
+
+We do not need all metadata columns. Harmonise them all so it is easy to do DE
+
+**To keep**
+* sample_id
+* batch
+* sex
+* condition
+
+```{r libraries}
+library(dplyr)
+library(magrittr)
+```
+
+```{r parameters}
+meta_dir <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/documentation"
+save_dir <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/documentation"
+```
+
+```{r load metadata}
+meta_rms <- read.delim(file = paste(save_dir,"metadata_annot_RMS.txt",sep ="/"), header = T, sep = ";")
+meta_gtex <- read.delim(file = paste(meta_dir,"gtex_metadata.txt",sep ="/"), header = T)
+meta_evo <- read.delim(file = paste(meta_dir,"evodevo_metadata_weeks.txt",sep ="/"), header = T)
+meta_r2 <- read.delim(file = paste(meta_dir,"R2_RNA_atlas_metadata.txt",sep ="/"), header = T)
+```
+
+```{r GTEx}
+
+meta_gtex_fixed <- meta_gtex %>%
+  dplyr::select(specimen_id,tissue_type,sex) %>%
+  dplyr::rename(sample_id = specimen_id, condition = tissue_type) %>%
+  dplyr::mutate(batch = "GTEX",
+                condition = ifelse(
+    condition %in% c("Cervix Uteri", "Uterus", "Vagina", "Ovary", "Fallopian Tube"),
+    "female_reproductive",
+    ifelse(
+      condition %in% c("Esophagus", "Colon", "Small Intestine", "Stomach"),
+      "digestive_system",
+        ifelse(
+          condition %in% c("Prostate", "Testis"),
+          "male_reproductive",
+          condition)
+      )
+    )
+  )
+rownames(meta_gtex_fixed) <- meta_gtex_fixed$sample_id
+
+write.table(meta_gtex_fixed, file = paste(save_dir,"RMS_GTEx.txt" , sep = "/"), quote = F, sep = ";")
+
+```
+
+```{r R2 RNA}
+
+meta_r2_fixed <- meta_r2 %>%
+  dplyr::select(BioSample,sample_type) %>%
+  dplyr::rename(sample_id = BioSample, condition = sample_type) %>%
+  dplyr::mutate(sex = "not available",
+                batch = "R2") %>%
+  dplyr::filter(!(sample_id %in% c("SAMN13014280","SAMN13013934")))
+
+rownames(meta_r2_fixed) <- meta_r2_fixed$sample_id
+
+write.table(meta_r2_fixed, file = paste(save_dir,"RMS_R2_atlas.txt" , sep = "/"), quote = F, sep = ";")
+```
+
+```{r EVO-DEVO plotting}
+
+meta_evo_fixed <- meta_evo %>%
+  dplyr::select(Source.Name,Characteristics.organism.part.,Characteristics.sex.,Factor.Value.developmental.stage.) %>%
+  dplyr::rename(sample_id = Source.Name, 
+                type = Characteristics.organism.part., 
+                sex = Characteristics.sex.,
+                devo_stage = Factor.Value.developmental.stage.  ) %>%
+  dplyr::mutate(condition = ifelse(grepl("post conception",devo_stage),paste0(type,"_fetal"),
+                ifelse(devo_stage %in% c("neonate","infant","toddler","school age child","adolescent"),
+                       paste0(type,"_child"),paste0(type,"_adult"))),
+                batch = "EVO") %>%
+  dplyr::select(-type,-devo_stage)
+
+rownames(meta_evo_fixed) <- meta_evo_fixed$sample_id
+
+write.table(meta_evo_fixed, file = paste(save_dir,"RMS_EVO.txt", sep ="/"), quote = F, sep = ";")
+
+```
+
+```{r EVO-DEVO DESEQ2}
+
+meta_evo_deseq <- meta_evo %>%
+  dplyr::select(Source.Name,Characteristics.organism.part.,Characteristics.sex.,Factor.Value.developmental.stage.) %>%
+  dplyr::rename(sample_id = Source.Name, 
+                type = Characteristics.organism.part., 
+                sex = Characteristics.sex.,
+                devo_stage = Factor.Value.developmental.stage.  ) %>%
+  dplyr::mutate(condition = ifelse(grepl("post conception",devo_stage),
+                                   paste0(type,"_fetal"),
+                                   paste0(type,"_postbirth")),
+                batch = "EVO") %>%
+  dplyr::select(-type,-devo_stage)
+
+rownames(meta_evo_deseq) <- meta_evo_deseq$sample_id
+
+write.table(meta_evo_deseq, file = paste(save_dir,"RMS_EVO_DESEQ.txt", sep ="/"), quote = F, sep = ";")
+
+```
+
+
+
+write.table(meta_evo_deseq2, file = paste(save_dir,"RMS_EVO_deseq2.txt", sep ="/"), quote = F, sep = ";")
+
+```
+
+
+```{r FP RMS}
+
+meta_fp_rms_fixed <- meta_rms %>%
+  dplyr::select(sample_id,batch,new_condition,sex) %>%
+  dplyr::filter(new_condition == "ARMS") %>%
+  dplyr::mutate(new_condition = "FP-RMS") %>%
+  dplyr::rename(condition = new_condition)
+
+rownames(meta_fp_rms_fixed) <- meta_fp_rms_fixed$sample_id
+
+write.table(meta_fp_rms_fixed, file = paste(save_dir, "RMS_fp.txt", sep = "/"), sep =";", quote = F)
+
+```
+
+```{r FN RMS}
+
+meta_fn_rms_fixed <- meta_rms %>%
+  dplyr::select(sample_id,batch,new_condition,sex) %>%
+  dplyr::filter(new_condition %in% c("ERMS","SCRMS","RMS")) %>%
+  dplyr::mutate(new_condition = "FN-RMS") %>%
+  dplyr::rename(condition = new_condition)
+
+rownames(meta_fn_rms_fixed) <- meta_fn_rms_fixed$sample_id
+
+write.table(meta_fn_rms_fixed, file = paste(save_dir, "RMS_fn.txt", sep = "/"), sep =";", quote = F)
+
+```
+
+```{r FP ORG RMS}
+
+meta_fp_org <- data.frame(sample_id = 98:113,
+                          condition = "FP-RMS",
+                          sex = "not available",
+                          batch = "PMC-ORG")
+
+rownames(meta_fp_org) <- meta_fp_org$sample_id
+
+write.table(meta_fp_org, file = paste(save_dir, "RMS_fp_org.txt", sep = "/"), sep =";", quote = F)
+```
+
+```{r FN ORG RMS}
+
+meta_fn_org <- data.frame(sample_id = 114:129,
+                          condition = "FN-RMS",
+                          sex = "not available",
+                          batch = "PMC-ORG")
+
+rownames(meta_fn_org) <- meta_fn_org$sample_id
+
+write.table(meta_fn_org, file = paste(save_dir, "RMS_fn_org.txt", sep = "/"), sep =";", quote = F)
+```
+
+```{r RMS overview table}
+
+rms_df <- data.frame(analysis_type = c("FP-patient","FN-patient","FP-organoid","FN-organoid"),
+                     metadata_name = c("RMS_fp.txt","RMS_fn.txt","RMS_fp_org.txt","RMS_fn_org.txt"))
+
+write.table(rms_df, file = paste(save_dir, "RMS_df.txt", sep = "/"), sep =";", quote = F)
+```
+
+```{r test}
+count_files <- list.files(paste(workdir,paste0("data/processed/salmon_quant/",
+                                               tumor_type),
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+all(file.exists(count_files))
+```

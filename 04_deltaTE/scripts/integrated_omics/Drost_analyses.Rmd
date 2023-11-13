@@ -1,0 +1,501 @@
+---
+title: "RMS_drost_presentation"
+author: "JD"
+date: "2023-10-27"
+output: html_document
+---
+
+# Parameters
+
+```{r libraries}
+library(dplyr)
+library(stringr)
+library(rtracklayer)
+library(GenomicRanges)
+library(magrittr)
+library(data.table)
+library(ggplot2)
+```
+
+```{r}
+workdir_rna <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/results"
+workdir_ribo <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results"
+
+```
+
+# RMS enriched heatmaps
+
+```{r parameters}
+# Colour scheme
+heatmap_cols <- colorRampPalette(rev(RColorBrewer::brewer.pal(n = 5, name = "RdYlBu")))(100)
+
+  # NBL - Brain - Cerebellum - Heart - Kidney - Liver - Kidney - Ovary - Testis
+  tissue_evo_cols <- c("#000194","#3698C7","#32CCFF","#AE1319","#CB992B","#339900","#CC3399","#FF6600")
+  # "NBL"                 "Adipose Tissue"      "Adrenal Gland"       "Blood Vessel"        "Bladder"             "Brain"              
+  # "Breast"              "Skin"                "Blood"               "female_reproductive" "digestive_system"    "Heart"              
+  # "Kidney"              "Liver"               "Lung"                "Salivary Gland"      "Muscle"              "Nerve"              
+  # "Pancreas"            "Pituitary"           "Spleen"              "Thyroid"             "male_reproductive"
+  tissue_gtex_cols <- c("#000194","#FECE98","#98EEA0","#FE7F90","#CF7F89","#F4F69F",
+                        "#46CEC9","#7A76F8","#FD19B7","#FE5AF9","#CA9865","#6B1995",
+                        "#49FFC3","#A9BB73","#9BFF52","#9ABC8D","#A9A7FA","#F2CE3E",
+                        "#995A3D","#ABFFA1","#7A8B60","#226E2C","#A9A9A9")
+  # NBL - healthy tissue - cancer cell line - cell line 
+  tissue_r2_cols <- c("#000194","#1400F5","#F50021","#F300ED")
+  
+  tx_cols <- c("#F2B854","#9BCAE3")
+```
+
+## GTEx
+
+```{r load data}
+enriched_genes <- c(rms_novel_pass$gene_id,rms_canon_pass$gene_id)
+
+meta_gtex <- read.table(file = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/documentation/metadata_gtex.txt", sep = ";")
+meta_gtex$type <- ifelse(meta_gtex$type %in% c("Cervix Uteri","Uterus","Vagina","Ovary","Fallopian Tube"),"female_reproductive",
+                         ifelse(meta_gtex$type %in% c("Esophagus","Colon","Small Intestine","Stomach"),"digestive_system",
+                                ifelse(meta_gtex$batch %in% c("SJ","PMC"),"RMS",
+                                       ifelse(meta_gtex$type %in% c("Prostate","Testis"),"male_reproductive",meta_gtex$type))))
+meta_gtex$type <- factor(meta_gtex$type,levels = unique(meta_gtex$type))
+
+gtex_dds <- readRDS(file = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/results/quantification/GTEX_DESEQ_type.RDS")
+
+gtex_vsd <- DESeq2::vst(gtex_dds,blind = T)
+
+heatmap_matrix <- t(scale(t(assay(gtex_vsd))))
+heatmap_matrix <- heatmap_matrix[which(row.names(heatmap_matrix) %in% enriched_genes),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+tissue_types <- levels(meta_gtex$type)
+
+```
+
+```{r create heatmap}
+
+plotname = "RMS_enr_GTEx.pdf"
+
+hm_list <- list()
+ha_list <- list()
+
+for (i in 1:length(tissue_types)) {
+  hm = heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_gtex[which(meta_gtex$type == tissue_types[i]),]$sample_id)]
+  hm_list[[tissue_types[i]]] = hm
+}
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta_gtex[, c("type","sample_id")])
+index <- order(match(meta_gtex$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+rownames(annot_col) <- colnames(heatmap_matrix)
+annot_col$sample_id <- NULL
+
+# This is a bit more complex. anno_cols is a named list, which means that a certain value is connected to another value. In this case, "Male" is connected to "skyblue". Check out anno_cols for yourself
+anno_cols <- list(type = setNames(tissue_gtex_cols,levels(annot_col$type)))
+
+for (i in 1:length(tissue_types)) {
+  ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col[which(row.names(annot_col) %in% colnames(hm_list[[i]])),],
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+  ha_list[[tissue_types[i]]] = ha
+}
+
+# Get all the rownames in a variable
+heatmap_genes <- rownames(heatmap_matrix)
+
+# Create row annotation dataframe that matches the class of the gene ID located in our
+annot_row <-
+  data.frame(class = ifelse(grepl("MSTRG",heatmap_genes),"novel","canon"))
+
+# same as column annotation, the DF requires row names
+rownames(annot_row) <- heatmap_genes
+
+
+# Connect the values of the row annotation to the colours
+row_cols <-
+  list(class = setNames(tx_cols,
+                        unique(annot_row$class)))
+
+ha_row <-
+  ComplexHeatmap::HeatmapAnnotation(
+    df = annot_row,
+    show_annotation_name = F,
+    which = "row",
+    col = row_cols
+  )
+
+breaks <- seq(0, 3, length.out = 100)
+
+chm_rms <- ComplexHeatmap::Heatmap(matrix = hm_list[[1]],
+                          # Hide names
+                          top_annotation = ha_list[[1]],
+                          left_annotation = ha_row,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  split = annot_row$class,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_list <- list()
+
+for (i in 2:length(tissue_types)) {
+  print(tissue_types[i])
+  chm = ComplexHeatmap::Heatmap(matrix = hm_list[[i]],
+                          # Hide names
+                          top_annotation = ha_list[[i]],
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  split = annot_row$class,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+  chm_list[[tissue_types[i]]] = chm
+}
+
+pdf(file = paste(workdir_rna,"quantification","figures","heatmaps",plotname, sep = "/"), width = 12, height = 4.5)
+
+ComplexHeatmap::draw(chm_rms+chm_list[[1]]+chm_list[[2]]+chm_list[[3]]+
+                       chm_list[[4]]+chm_list[[5]]+chm_list[[6]]+chm_list[[7]]+
+                       chm_list[[8]]+chm_list[[9]]+chm_list[[10]]+chm_list[[11]]+
+                       chm_list[[12]]+chm_list[[13]]+chm_list[[14]]+chm_list[[15]]+
+                       chm_list[[16]]+chm_list[[17]] +chm_list[[18]]+chm_list[[19]]+
+                       chm_list[[20]]+chm_list[[21]]+chm_list[[22]] ,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(0.5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+```
+
+## EVO-DEVO
+
+```{r load data}
+evo_dds <- readRDS(file = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/results/quantification/EVO_DESEQ_tissue.RDS")
+
+evo_vsd <- DESeq2::vst(evo_dds,blind = T)
+
+meta_evo <- read.table(file = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/documentation/metadata_evo.txt", sep = ";") %>%
+  dplyr::mutate(fetal_tissue = factor(fetal_tissue, levels = c("RMS",
+                                                               "forebrain_fetal","forebrain_postbirth",
+                                                               "hindbrain_fetal","hindbrain_postbirth",
+                                                               "heart_fetal","heart_postbirth",
+                                                               "kidney_fetal","kidney_postbirth",
+                                                               "liver_fetal","liver_postbirth",
+                                                               "ovary_fetal",
+                                                               "testis_fetal","testis_postbirth")),
+                tissue = factor(tissue, levels = c("RMS","forebrain","hindbrain","heart","kidney","liver","ovary","testis")),
+                stage = ifelse(fetal_tissue == "RMS","RMS",stage))
+
+```
+
+```{r create heatmap}
+plotname = "RMS_enr_EVO-DEVO.pdf"
+
+heatmap_matrix <- t(scale(t(assay(evo_vsd))))
+heatmap_matrix <- heatmap_matrix[which(row.names(heatmap_matrix) %in% enriched_genes),]
+
+tissue_types <- levels(meta_evo$tissue)
+
+tissue_metas <- list()
+hm_list <- list()
+ha_list <- list()
+
+for (i in 1:length(tissue_types)) {
+  meta = meta_evo[which(meta_evo$tissue == tissue_types[i]),]
+  meta = meta[order(meta$days),]
+  tissue_metas[[tissue_types[i]]] = meta
+  
+}
+
+for (i in 1:length(tissue_types)) {
+  hm = heatmap_matrix[,which(colnames(heatmap_matrix) %in% tissue_metas[[tissue_types[i]]]$sample_id)]
+  hm_list[[tissue_types[i]]] = hm
+}
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta_evo[, c("tissue","sample_id","stage")])
+index <- order(match(meta_evo$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+annot_col$sample_id <- NULL
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+rownames(annot_col) <- colnames(heatmap_matrix)
+
+# This is a bit more complex. anno_cols is a named list, which means that a certain value is connected to another value. In this case, "Male" is connected to "skyblue". Check out anno_cols for yourself
+anno_cols <- list(tissue = setNames(tissue_evo_cols,levels(annot_col$tissue)),
+                  stage = setNames(c("grey","darkgrey","gray40","#000194"),unique(annot_col$stage)))
+
+for (i in 1:length(tissue_types)) {
+  ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col[which(row.names(annot_col) %in% colnames(hm_list[[i]])),],
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+  ha_list[[tissue_types[i]]] = ha
+}
+
+# Get all the rownames in a variable
+heatmap_genes <- rownames(heatmap_matrix)
+
+# Create row annotation dataframe that matches the class of the gene ID located in our
+annot_row <-
+  data.frame(class = ifelse(grepl("MSTRG",heatmap_genes),"novel","canon"))
+
+# same as column annotation, the DF requires row names
+rownames(annot_row) <- heatmap_genes
+
+# Connect the values of the row annotation to the colours
+row_cols <-
+  list(class = setNames(tx_cols,
+                        unique(annot_row$class)))
+
+ha_row <-
+  ComplexHeatmap::HeatmapAnnotation(
+    df = annot_row,
+    show_annotation_name = F,
+    which = "row",
+    col = row_cols
+  )
+
+breaks <- seq(0, 3, length.out = 100)
+
+chm_rms <- ComplexHeatmap::Heatmap(matrix = hm_list[[1]],
+                          # Hide names
+                          top_annotation = ha_list[[1]],
+                          left_annotation = ha_row,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  split = annot_row$class,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_list <- list()
+
+for (i in 2:length(tissue_types)) {
+  print(tissue_types[i])
+  chm = ComplexHeatmap::Heatmap(matrix = hm_list[[i]],
+                          # Hide names
+                          top_annotation = ha_list[[i]],
+                          column_order = tissue_metas[[i]]$sample_id,
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  split = annot_row$velocity,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+  chm_list[[tissue_types[i]]] = chm
+}
+
+pdf(file = paste(workdir_rna,"quantification","figures","heatmaps",plotname, sep = "/"), width = 12, height = 4.5)
+
+ComplexHeatmap::draw(chm_rms+chm_list[[1]]+chm_list[[2]]+chm_list[[3]]+
+                       chm_list[[4]]+chm_list[[5]]+chm_list[[6]]+chm_list[[7]],
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(0.5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+```
+
+# Volcano plots
+
+Volcano plot using tumoroid data
+
+```{r load data}
+# Gene classes
+tx_gtf <- rtracklayer::import.gff(txome_gtf)
+tx_df <- as.data.frame(tx_gtf) %>%
+  dplyr::select(gene_id,gene_biotype,gene_name) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(gene_name = ifelse(grepl("MSTRG",gene_id),gene_id,gene_name),
+                gene_biotype = ifelse(grepl("pseudo",gene_biotype),"pseudogene_variant",gene_biotype))
+
+rms_tum <- read.delim(file = paste(workdir_rna,"quantification","tumoroid","RMS_FP_tumoroid_res.txt",sep = "/"), sep = ";") 
+
+rms_tum <- rms_tum %>%
+  dplyr::mutate(gene_id = rownames(.)) %>%
+  dplyr::left_join(tx_df) %>%
+  dplyr::filter(gene_biotype %in% c("stringtie","lncRNA","protein_coding","pseudogene_variant"))
+  
+```
+
+```{r plot all genes}
+ggplot(rms_tum, aes(y = -log10(padj), x = log2FoldChange, colour = gene_biotype)) +
+  geom_point() +
+  scale_x_continuous() + 
+  viridis::scale_color_viridis(discrete = T, end = 0.9) +
+  theme_minimal() +
+  geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")
+```
+
+
+```{r highlight RMS-enriched genes}
+enriched_genes <- c(pass_canon[which(pass_canon$pass == T & pass_canon$selected == T),]$gene_id,
+                    pass_novel[which(pass_novel$pass == T),]$gene_id)
+
+highlighted_genes <- c("MSTRG.26303","MYMX","CCER2","MAGEA2B","LINC00945","AC007846.1","PRDM12","FRMPD1","MAGEA2")
+
+rms_tum_enr <- rms_tum %>%
+  dplyr::filter(gene_id %in% enriched_genes) %>%
+  dplyr::mutate(gene_label = gene_name) %>%
+  dplyr::mutate(gene_label = ifelse(gene_label %in% highlighted_genes,gene_label,NA))
+
+ggplot(rms_tum_enr, aes(y = -log10(padj), x = log2FoldChange, colour = gene_biotype,label=gene_label)) +
+  geom_point(size = 1) +
+  ggrepel::geom_text_repel(size = 3,show.legend = FALSE) +
+  scale_x_continuous() + 
+  viridis::scale_color_viridis(discrete = T, end = 0.9) +
+  theme_minimal() +
+  geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")
+```
+
+# Translation
+
+```{r}
+interesting_orfs <- read.delim(paste(savedir,"tumoroid","RMS_tumoroid_all_ORFs.txt",sep="/"), sep =";")
+
+rms_tumoroid_orfs_enriched <- interesting_orfs %>%
+  dplyr::group_by(orf_id) %>%
+  dplyr::summarise(median_psites = median(p_sites),
+                   sum_psites = sum(p_sites),
+                   mean_pval = mean(p_value)) %>%
+  dplyr::left_join(interesting_orfs[,-c(9,10,12)]) %>%
+  dplyr::mutate(orf_type = ifelse(gene_biotype == "lncRNA","lncORF",orf_type)) %>%
+  dplyr::filter(orf_type %in% c("uORF","novel","lncORF","dORF","ORF_annotated")) %>%
+  dplyr::distinct() %>%
+  dplyr::filter(pass == T)
+```
+
+## Transl genes volcano
+
+```{r plot DE translated genes}
+transl_enriched_orfs <- unique(rms_tumoroid_orfs_enriched$gene_id)
+
+rms_tum_transl <- rms_tum %>%
+  dplyr::filter(gene_id %in% transl_enriched_orfs) %>%
+  dplyr::mutate(gene_label = gene_name)
+
+ggplot(rms_tum_transl, aes(y = -log10(padj), x = log2FoldChange, colour = gene_biotype,label=gene_label)) +
+  geom_point(size = 1) +
+  ggrepel::geom_text_repel(size = 3,show.legend = FALSE) +
+  scale_x_continuous() + 
+  viridis::scale_color_viridis(discrete = T, end = 0.9) +
+  theme_minimal() +
+  geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")
+```
+
+# ORF overview figure
+
+```{r}
+ggplot(rms_tumoroid_orfs_enriched, aes(x = orf_type, fill = orf_type)) +
+  geom_histogram(stat = "count") +
+  stat_count(binwidth = 1, 
+             geom = 'text',
+             aes(label = after_stat(count)),
+             col = "white",
+             position = position_stack(vjust = 0.5)) +
+  coord_flip() +
+  scale_fill_manual(values = viridis::magma(5, end = 0.9)) +
+  theme_minimal()
+```
+# Custom ORF view
+
+Tumoroid ORFs
+
+Use the code from ORF_comparison_figures.Rmd to create nice overview of ORFs
+
+```{r}
+psite_max = 1000
+prefix = "FP-FN_sum_plus"
+gen_id="ENSG00000106484"
+orfid="ENST00000488093_185_211"
+
+m_cols <- mcols(orfquant_orfs[[20]]) %>% as.data.frame() %>% 
+    mutate(orf_names = names(orfquant_orfs[[20]])) %>% 
+    dplyr::filter(gene_id == gen_id & orf_id == orfid)
+  sel_orf <- orfquant_orfs[[20]][m_cols$orf_names] %>% as.data.frame() %>% 
+    group_by(group_name) %>% mutate(exon = row_number())
+  sel_orf_g <- sel_orf %>% makeGRangesFromDataFrame()
+  sel_orf_g$exon <- sel_orf$exon
+  
+# For ORF view
+start_pos = min(start(sel_orf_g))
+end_pos =   max(end(sel_orf_g))
+strand = as.character(unique(strand(sel_orf_g)))
+chr = unique(seqnames(sel_orf_g))
+gen = unique(genome(sel_orf_g))
+
+ORF_track_ORFq <- AnnotationTrack(sel_orf_g, genome = gen, showId = F, 
+                                  shape = "box", name = "ORF\nlocus", 
+                                  fill = "cornflowerblue", 
+                                  col = "cornflowerblue", rotation.title = 0)
+
+  # P sites data tracks
+  displayPars(dtrack_sum_FP_plus) <- 
+    list(ylim = c(0, psite_max),
+         yTicksAt = c(0, psite_max), # Change tick marks
+         col = c(colors[2], colors[1], colors[3]),
+         groups = c("+1", "+2", "+3"), 
+         legend=F
+         )
+  displayPars(dtrack_sum_FN_plus) <- 
+    list(ylim = c(0,psite_max),
+         yTicksAt = c(0,psite_max), # Change tick marks
+         col = c(colors[2], colors[1], colors[3]), 
+         groups = c("+1", "+2", "+3"), 
+         legend=F
+         )
+  
+  pdf(paste(savedir,"tumoroid","figures", "p_sites", paste0(prefix,"_",gene_id,".pdf"),sep="/"), width = 9.5, height = 4.16)
+  
+  plotTracks(list(dtrack_sum_FP_plus,
+                  dtrack_sum_FN_plus,
+                  ORF_track_ORFq,
+                  transcript_track), 
+             from = start_pos - 10, 
+             to = end_pos + 10, showExonId=F, chromosome = chr, stacking = "squish", 
+             collapse = FALSE, 
+             sizes = c(0.2,0.2,0.05,0.3),
+             geneSymbols = T, transcriptAnnotation = "transcript_id", 
+             col.title = "black", background.title = "white", strand = "+",
+             add35=T, showTitle=T, cex.title = 0.8, cex.axis = 0.5)
+  dev.off()
+}
+
+```

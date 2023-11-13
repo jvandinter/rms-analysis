@@ -1,0 +1,397 @@
+---
+title: "plots"
+output: html_document
+date: "2023-09-08"
+---
+
+```{r setup libraries}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+
+```{r load data}
+savedir = "/hpc/pmc_vanheesch/projects/Amalia/protein_prediction_project/20230623_AN_pipeline/documentation"
+overview_table <- "/hpc/pmc_vanheesch/projects/Amalia/protein_prediction_project/20230623_AN_pipeline/analysis/run_54ebf1a6_table.tsv"
+table_psites <- "/hpc/pmc_vanheesch/projects/Amalia/protein_prediction_project/20230623_AN_pipeline/documentation/NBL_patient_sequences_subset_19_150bp.tsv"
+```
+
+```{r create table}
+overview_table_full <- data.table::fread(overview_table)
+table_psites_full <- data.table::fread(table_psites)
+```
+
+```{r}
+colnames(overview_table_full)[1] <- "orf_id"
+
+all_info_table <- overview_table_full %>%
+  left_join(., table_psites_full, by='orf_id')
+
+all_info_subset <- subset(all_info_table, select = -c(width, sequence, names))
+```
+
+```{r plots}
+ggplot(all_info_subset, aes(x = count)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "sample count", y = "Density", title = "Density Plot of sample count") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = pi_isoelectricpoint)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "pI (Isoelectric Point)", y = "Density", title = "Density Plot of Isoelectric Point") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = hydrophobicity)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Hydrophobicity", y = "Density", title = "Density Plot of Hydrophobicity") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = instability)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Instability", y = "Density", title = "Density Plot of Instability") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = mass_over_charge)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Mass Over Charge", y = "Density", title = "Density Plot of Mass Over Charge") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = psite_per_residue)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "pSite per residue", y = "Density", title = "Density Plot of p site per residue") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = length)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "length aa", y = "Density", title = "Density Plot of length") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = charge)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "charge", y = "Density", title = "Density Plot of charge") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = mean_pLDDT_OmegaFold)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean score OmegaFold", y = "Density", title = "Density Plot of mean pLDDT score of OmegaFold") +
+  theme_minimal() +
+  geom_vline(colour = "red", xintercept = 70)
+
+ggplot(all_info_subset, aes(x = mean_iupred3_score)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean iupred3 score", y = "Density", title = "Density Plot of mean iupred3 score") +
+  theme_minimal() +
+  geom_vline(colour = "red", xintercept = 0.5)
+
+ggplot(all_info_subset, aes(x = Number_SB)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Strong binders by netMHCpan", y = "Density", title = "Density Plot of strong binders by netMHCpan") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = Number_WB)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Weak binders by netMHCpan", y = "Density", title = "Density Plot of weak binders by netMHCpan") +
+  theme_minimal()
+```
+## Density plots
+```{r}
+ggplot(all_info_subset, aes(x = count)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "sample count", y = "Density", title = "Density Plot of sample count") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = count, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "sample count", y = "Density", title = "Density Plot of sample count by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = pi_isoelectricpoint, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "pI (Isoelectric Point)", y = "Density", title = "Density Plot of Isoelectric Point by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = hydrophobicity, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Hydrophobicity", y = "Density", title = "Density Plot of Hydrophobicity by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = instability, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Instability", y = "Density", title = "Density Plot of Instability by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = mass_over_charge, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Mass Over Charge", y = "Density", title = "Density Plot of Mass Over Charge by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = psite_per_residue, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10 () +
+  labs(x = "pSite per residue", y = "Density", title = "Density Plot of p site per residue by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = length, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "length", y = "Density", title = "Density Plot of length by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = charge, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "charge", y = "Density", title = "Density Plot of charge by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = mean_pLDDT_OmegaFold, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean score OmegaFold", y = "Density", title = "Density Plot of mean pLDDT score of OmegaFold by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = mean_iupred3_score, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean iupred3 score", y = "Density", title = "Density Plot of mean iupred3 score by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = Number_SB, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Strong binders by netMHCpan", y = "Density", title = "Density Plot of strong binders by netMHCpan by ORF type") +
+  theme_minimal()
+
+ggplot(all_info_subset, aes(x = Number_WB, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Weak binders by netMHCpan", y = "Density", title = "Density Plot of weak binders by netMHCpan by ORF type") +
+  theme_minimal()
+```
+
+
+
+```{r}
+ggplot(all_info_subset, aes(x = signalP_result)) +
+  geom_bar() +
+  labs(x = "SignalP Result", y = "Count", title = "Count of SignalP Results")
+
+ggplot(all_info_subset, aes(x = DeepTMHMM_prediction)) +
+  geom_bar() +
+  labs(x = "DeepTMHMM Prediction", y = "Count", title = "Count of DeepTMHMM Predictions")
+
+ggplot(all_info_subset, aes(x = orf_type)) +
+  geom_bar() +
+  labs(x = "orf type", y = "Count", title = "Count of orf types")
+
+ggplot(all_info_subset, aes(x = gene_biotype)) +
+  geom_bar() +
+  labs(x = "Gene biotype", y = "Count", title = "Count of gene biotype") +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r}
+ggplot(all_info_subset, aes(x = signalP_result)) +
+  geom_bar() +
+  labs(x = "SignalP Result", y = "Count", title = "Count of SignalP Results") +
+  facet_wrap(~orf_type)
+
+ggplot(all_info_subset, aes(x = DeepTMHMM_prediction)) +
+  geom_bar() +
+  labs(x = "DeepTMHMM Prediction", y = "Count", title = "Count of DeepTMHMM Predictions") +
+  facet_wrap(~orf_type)
+```
+```{r}
+# Create scatter plot for regex_count_DP
+ggplot(all_info_subset, aes(x = length, y = Regex_Count_DP)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Protein Length", y = "Number of Regex (DP)", title = "Correlation between Protein Length and Number of Regex (DP)") +
+  theme_minimal()
+
+# Create scatter plot for regex_count_WP
+ggplot(all_info_subset, aes(x = length, y = Regex_Count_WP)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "green") +
+  labs(x = "Protein Length", y = "Number of Regex (WP)", title = "Correlation between Protein Length and Number of Regex (WP)") +
+  theme_minimal()
+```
+
+subset on neuroblastoma enriched -> nlb_canon and nbl_novel are from create_orf_subset.rmd
+```{r}
+NBL_enriched_23 <- all_info_subset[all_info_subset$gene_id %in% nbl_canon_pass$gene_id]
+NBL_enriched_2 <- all_info_subset[all_info_subset$gene_id %in% nbl_novel_pass$gene_id]
+
+NBL_enriched <- rbind(NBL_enriched_2, NBL_enriched_23)
+```
+
+```{r}
+write.table(NBL_enriched, file = paste(savedir,"NBL_enriched_patient.tsv",sep="/"), quote = F, row.names = F, sep ="\t")
+```
+
+```{r}
+ggplot(NBL_enriched, aes(x = count)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "sample count", y = "Density", title = "Density Plot of sample count") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = pi_isoelectricpoint)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "pI (Isoelectric Point)", y = "Density", title = "Density Plot of Isoelectric Point") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = hydrophobicity)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Hydrophobicity", y = "Density", title = "Density Plot of Hydrophobicity") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = instability)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Instability", y = "Density", title = "Density Plot of Instability") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = mass_over_charge)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Mass Over Charge", y = "Density", title = "Density Plot of Mass Over Charge") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = psite_per_residue)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10 () +
+  labs(x = "pSite per residue", y = "Density", title = "Density Plot of p site per residue") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = length)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "length aa", y = "Density", title = "Density Plot of length") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = charge)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "charge", y = "Density", title = "Density Plot of charge") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = mean_pLDDT_OmegaFold)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean score OmegaFold", y = "Density", title = "Density Plot of mean pLDDT score of OmegaFold") +
+  theme_minimal() +
+  geom_vline(colour = "red", xintercept = 70)
+
+ggplot(NBL_enriched, aes(x = mean_iupred3_score)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean iupred3 score", y = "Density", title = "Density Plot of mean iupred3 score") +
+  theme_minimal() +
+  geom_vline(colour = "red", xintercept = 0.5)
+
+ggplot(NBL_enriched, aes(x = Number_SB)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Strong binders by netMHCpan", y = "Density", title = "Density Plot of strong binders by netMHCpan") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = Number_WB)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Weak binders by netMHCpan", y = "Density", title = "Density Plot of weak binders by netMHCpan") +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(NBL_enriched, aes(x = count)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "sample count", y = "Density", title = "Density Plot of sample count") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = count, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "sample count", y = "Density", title = "Density Plot of sample count by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = hydrophobicity, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Hydrophobicity", y = "Density", title = "Density Plot of Hydrophobicity by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = instability, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Instability", y = "Density", title = "Density Plot of Instability by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = mass_over_charge, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Mass Over Charge", y = "Density", title = "Density Plot of Mass Over Charge by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = psite_per_residue, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10 () +
+  labs(x = "pSite per residue", y = "Density", title = "Density Plot of p site per residue by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = length, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "length", y = "Density", title = "Density Plot of length by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = charge, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "charge", y = "Density", title = "Density Plot of charge by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = mean_pLDDT_OmegaFold, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean score OmegaFold", y = "Density", title = "Density Plot of mean pLDDT score of OmegaFold by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = mean_iupred3_score, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "mean iupred3 score", y = "Density", title = "Density Plot of mean iupred3 score by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = Number_SB, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Strong binders by netMHCpan", y = "Density", title = "Density Plot of strong binders by netMHCpan by ORF type") +
+  theme_minimal()
+
+ggplot(NBL_enriched, aes(x = Number_WB, fill = orf_type)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Weak binders by netMHCpan", y = "Density", title = "Density Plot of weak binders by netMHCpan by ORF type") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(all_info_subset, aes(x = signalP_result)) +
+  geom_bar() +
+  labs(x = "SignalP Result", y = "Count", title = "Count of SignalP Results")
+
+ggplot(all_info_subset, aes(x = DeepTMHMM_prediction)) +
+  geom_bar() +
+  labs(x = "DeepTMHMM Prediction", y = "Count", title = "Count of DeepTMHMM Predictions")
+ggplot(NBL_enriched, aes(x = orf_type)) +
+  geom_bar() +
+  labs(x = "orf type", y = "Count", title = "Count of orf types")
+
+ggplot(NBL_enriched, aes(x = gene_biotype)) +
+  geom_bar() +
+  labs(x = "Gene biotype", y = "Count", title = "Count of gene biotype") +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+
+```{r}
+ggplot(NBL_enriched, aes(x = signalP_result)) +
+  geom_bar() +
+  labs(x = "SignalP Result", y = "Count", title = "Count of SignalP Results") +
+  facet_wrap(~orf_type)
+
+ggplot(NBL_enriched, aes(x = DeepTMHMM_prediction)) +
+  geom_bar() +
+  labs(x = "DeepTMHMM Prediction", y = "Count", title = "Count of DeepTMHMM Predictions") +
+  facet_wrap(~orf_type)
+
+ggplot(NBL_enriched, aes(x = gene_biotype)) +
+  geom_bar() +
+  labs(x = "Gene biotype", y = "Count", title = "Count of gene biotype") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  facet_wrap(~orf_type)
+
+```
+
+```{r}
+table(NBL_enriched$orf_type)
+table(all_info_subset$orf_type)
+```
+

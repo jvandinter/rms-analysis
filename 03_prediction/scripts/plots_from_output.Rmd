@@ -1,0 +1,296 @@
+---
+title: "plots outfile"
+output: html_document
+date: "2023-08-08"
+---
+# Load packages
+```{r setup, include=FALSE}
+library(tidyverse)
+library(magrittr)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+library(formattable)
+```
+
+# Loading data
+
+Loading of the file
+
+```{r load file, include=FALSE}
+pipeline_output <- read.table('/hpc/pmc_vanheesch/projects/Amalia/protein_prediction_project/20230623_AN_pipeline/analysis/run_aac24fe5_table.tsv', sep = '\t', 
+                               header = TRUE)
+```
+
+# Plotting of data
+## Binding type plot
+
+```{r pressure, echo=FALSE}
+ggplot(pipeline_output, aes(x = factor("Binder Type", levels = c("Strong Binder", "Weak Binder")),
+                 y = c(Number_SB, Number_WB), fill = factor("Binder Type"))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL, y = "Count", title = "Number of Strong Binders vs. Weak Binders") +
+  scale_fill_manual(values = c("Strong Binder" = "blue", "Weak Binder" = "red")) +
+  theme_minimal()
+```
+## Boxplots
+```{r}
+# Example 3: Box plot of DeepTMHMM_prediction by signalP_result
+ggplot(pipeline_output, aes(x = DeepTMHMM_prediction, y = DeepTMHMM_prediction, fill = signalP_result)) +
+  geom_boxplot() +
+  labs(x = "DeepTMHMM Prediction", y = "SignalP Result", title = "Boxplot of DeepTMHMM Prediction by SignalP Result")
+```
+## Density plots
+```{r}
+ggplot(pipeline_output, aes(x = pi_isoelectricpoint, fill = signalP_result)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "pI (Isoelectric Point)", y = "Density", title = "Density Plot of Isoelectric Point by SignalP Result") +
+  theme_minimal()
+```
+```{r}
+ggplot(pipeline_output, aes(x = hydrophobicity, fill = signalP_result)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Hydrophobicity", y = "Density", title = "Density Plot of Hydrophobicity by SignalP Result") +
+  theme_minimal()
+```
+```{r}
+ggplot(pipeline_output, aes(x = instability, fill = signalP_result)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Instability", y = "Density", title = "Density Plot of Instability by SignalP Result") +
+  theme_minimal()
+```
+```{r}
+ggplot(pipeline_output, aes(x = mass_over_charge, fill = signalP_result)) +
+  geom_density(alpha = 0.5) +
+  labs(x = "Mass Over Charge", y = "Density", title = "Density Plot of Mass Over Charge by SignalP Result") +
+  theme_minimal()
+```
+
+
+## Barplots (counts)
+```{r}
+ggplot(pipeline_output, aes(x = signalP_result)) +
+  geom_bar() +
+  labs(x = "SignalP Result", y = "Count", title = "Count of SignalP Results")
+```
+```{r}
+ggplot(pipeline_output, aes(x = DeepTMHMM_prediction)) +
+  geom_bar() +
+  labs(x = "DeepTMHMM Prediction", y = "Count", title = "Count of DeepTMHMM Predictions")
+```
+
+
+## Correlation plots (length)
+Several plots that correlate the length to other values
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = hydrophobicity)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Protein Length", y = "Hydrophobicity", title = "Correlation between Protein Length and Hydrophobicity") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = mean_iupred3_score)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Protein Length", y = "Mean Disorder Score", title = "Correlation between Protein Length and Mean Disorder Score") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = moleculairweight)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Protein Length", y = "Molecular Weight", title = "Correlation between Protein Length and Molecular Weight") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = instability)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(x = "Protein Length", y = "Instability Index", title = "Correlation between Protein Length and Instability Index") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = pi_isoelectricpoint)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "green") +
+  labs(x = "Protein Length", y = "Isoelectric Point", title = "Correlation between Protein Length and Isoelectric Point") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = mean_pLDDT_OmegaFold)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(x = "Mean pLDDT score", y = "Instability Index", title = "Correlation between Protein Length and pLDDT score") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = Number_SB)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "orange") +
+  labs(x = "Protein Length", y = "Number of Strong Binders", title = "Correlation between Protein Length and Number of Strong Binders") +
+  theme_minimal()
+
+ggplot(pipeline_output, aes(x = length, y = Number_WB)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "brown") +
+  labs(x = "Protein Length", y = "Number of Weak Binders", title = "Correlation between Protein Length and Number of Weak Binders") +
+  theme_minimal()
+```
+
+```{r}
+# Create scatter plot for regex_count_DP
+ggplot(pipeline_output, aes(x = length, y = Regex_Count_DP)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Protein Length", y = "Number of Regex (DP)", title = "Correlation between Protein Length and Number of Regex (DP)") +
+  theme_minimal()
+
+# Create scatter plot for regex_count_WP
+ggplot(pipeline_output, aes(x = length, y = Regex_Count_WP)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "green") +
+  labs(x = "Protein Length", y = "Number of Regex (WP)", title = "Correlation between Protein Length and Number of Regex (WP)") +
+  theme_minimal()
+```
+
+### Correlation with facets
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = hydrophobicity)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ DeepTMHMM_prediction, ncol = 2) +
+  labs(x = "Protein Length", y = "Hydrophobicity", title = "Correlation between Length and Hydrophobicity by DeepTMHMM Prediction")
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = charge)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ DeepTMHMM_prediction, ncol = 2) +
+  labs(x = "Protein Length", y = "Charge", title = "Correlation between Length and Charge by DeepTMHMM Prediction")
+```
+
+```{r}
+ggplot(pipeline_output, aes(x = length, y = mean_pLDDT_OmegaFold)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ DeepTMHMM_prediction, ncol = 2) +
+  labs(x = "Protein Length", y = "mean pLDDT", title = "Correlation between Length and mean pLDDT by DeepTMHMM Prediction")
+```
+
+## Heatmaps
+
+```{r}
+columns_for_correlation <- c(
+  "length", "hydrophobicity", "moleculairweight", "mass_over_charge", "instability",
+  "pi_isoelectricpoint", "charge", "mean_pLDDT_OmegaFold"
+)
+
+# Calculate correlation matrix
+correlation_matrix <- cor(pipeline_output[, columns_for_correlation])
+
+# Melt correlation matrix for heatmap
+correlation_melted <- melt(correlation_matrix)
+
+# Create a heatmap
+ggplot(correlation_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "yellow", high = "black") +
+  labs(x = "Features", y = "Features", title = "Correlation Heatmap") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+columns_for_heatmap <- c(
+  "length", "hydrophobicity", "moleculairweight", "mass_over_charge", "instability",
+  "pi_isoelectricpoint", "charge", "mean_pLDDT_OmegaFold"
+)
+
+data_for_heatmap <- pipeline_output[, columns_for_heatmap]  # Subset the desired columns
+
+# Transpose the data to have samples as rows and features as columns
+data_transposed <- t(data_for_heatmap[, -1])  # Exclude the first column (protein_id)
+
+# Calculate correlation matrix
+correlation_matrix <- cor(data_transposed)
+
+# Melt correlation matrix for heatmap
+correlation_melted <- melt(correlation_matrix)
+
+# Create a heatmap
+ggplot(correlation_melted, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "yellow", high = "black") +
+  labs(x = "Features", y = "Samples", title = "Feature Correlation Heatmap") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## test plots
+
+```{r}
+# Reshape the data to long format for plotting
+long_pipeline_output <- pipeline_output %>%
+  select(protein_id, Number_SB, Number_WB) %>%
+  pivot_longer(cols = c(Number_SB, Number_WB),
+               names_to = "Binder Type",
+               values_to = "Count")
+
+# Create a bar plot
+ggplot(long_pipeline_output, aes(x = protein_id, y = Count, fill = `Binder Type`)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Protein ID", y = "Count", title = "Number of Strong Binders vs. Weak Binders") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = c("Number_SB" = "blue", "Number_WB" = "red"))
+```
+
+```{r}
+MSTRG_protein_id <- pipeline_output$protein_id
+MSTRG_microproteins_subset <- as.data.frame(MSTRG_protein_id)
+write.table(MSTRG_microproteins_subset, file = "/hpc/pmc_vanheesch/projects/Amalia/protein_prediction_project/data/MSTRG_microproteins_subset.txt", sep = '\t', quote = FALSE, row.names = FALSE)
+```
+
+```{r}
+# Does not work yet
+# Define color mapping based on specific columns and conditions
+color_mapping <- list(
+  hydrophobicity = color_tile("red", "green"),
+  moleculairweight = color_tile("red", "green"),
+  mass_over_charge = color_tile("red", "green"),
+  instability = color_tile("red", "green"),
+  pi_isoelectricpoint = color_tile("red", "green"),
+  charge = color_tile("red", "green"),
+  mean_pLDDT_OmegaFold = color_tile("red", "green"),
+  mean_iupred3_score = color_tile("red", "green")
+)
+
+# Apply the color mapping to the data
+formatted_data <- formattable(data, align = "c",
+  list(
+    hydrophobicity = color_mapping$hydrophobicity,
+    moleculairweight = color_mapping$moleculairweight,
+    mass_over_charge = color_mapping$mass_over_charge,
+    instability = color_mapping$instability,
+    pi_isoelectricpoint = color_mapping$pi_isoelectricpoint,
+    charge = color_mapping$charge,
+    mean_pLDDT_OmegaFold = color_mapping$mean_pLDDT_OmegaFold,
+    mean_iupred3_score = color_mapping$mean_iupred3_score
+  )
+)
+
+# Print the formatted data
+print(formatted_data)
+
+```
+
