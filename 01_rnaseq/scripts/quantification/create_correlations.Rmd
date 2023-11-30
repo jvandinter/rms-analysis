@@ -1,0 +1,208 @@
+---
+title: "RMS FP gene correlation"
+author: "JD"
+date: "2023-11-17"
+output: html_document
+---
+
+```{r library}
+library(rtracklayer)
+library(DESeq2)
+library(magrittr)
+library(dplyr)
+library(ComplexHeatmap)
+library(ggplot2)
+```
+
+# Gene correlation
+
+select novel, lncRNA, canon
+select enriched in FP-RMS
+Use FP-RMS counts
+
+```{r parameters}
+basedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq"
+rds_loc = paste(basedir,'analysis','quantification','deseq2',sep="/")
+
+gtf = rtracklayer::import.gff(paste(basedir, "analysis", "rnaseq_pipeline", 
+            "customannotation","RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/"))
+gtf_df <- as.data.frame(gtf) %>%
+  dplyr::filter(type == "gene")
+
+rms_fp_cohort = read.delim(paste(basedir, "documentation", "RMS_fp.txt", sep = "/"), sep = ";")
+rms_fp_org = read.delim(paste(basedir, "documentation", "RMS_fp_org.txt", sep = "/"), sep = ";")
+```
+
+
+
+Already run
+```{r create FP counts, eval =F, echo=F}
+rms_meta <- rbind(rms_fp_cohort,rms_fp_org)
+rownames(rms_meta) <- rms_meta$sample_id
+
+count_files <- list.files(paste(basedir,"analysis","quantification","salmon_quant",
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+
+txdb = paste(basedir,"analysis","rnaseq_pipeline","customannotation",
+             paste0(tumor_type,"_container"),
+             paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+
+txdb <- AnnotationDbi::loadDb(txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+count_files_fp <- count_files[which(names(count_files) %in% rms_meta$sample_id)]
+rms_meta <- rms_meta[which(rms_meta$sample_id %in% names(count_files_rms)),]
+
+txi_rms <- tximport::tximport(count_files_fp, type = "salmon", 
+                              tx2gene = tx2gene, 
+                              dropInfReps = T, 
+                              countsFromAbundance = "scaledTPM")
+
+all(rownames(rms_meta) == colnames(txi_rms$counts))
+all(colnames(txi_rms$counts) == colnames(txi_rms$length))
+
+rms_meta <- rms_meta[colnames(txi_rms$counts),]
+all(rownames(rms_meta) == colnames(txi_rms$counts))
+
+dds_fp <- DESeq2::DESeqDataSetFromTximport(txi = txi_rms,
+                                            colData = rms_meta,
+                                            design = ~ 1)
+
+saveRDS(dds_fp,
+        file = paste(rds_loc,"RMS_FP_counts.RDS", sep = "/"))
+
+```
+
+```{r gene selection}
+
+fp_pass_novel <- read.delim(paste(basedir,"results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fp_pass_canon <- read.delim(paste(basedir,"results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fn_pass_novel <- read.delim(paste(basedir,"results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fn_pass_canon <- read.delim(paste(basedir,"results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_novel <- read.delim(paste(basedir,"results","quantification","old",
+                                  paste0("RMS_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_canon <- read.delim(paste(basedir,"results","quantification","old",
+                                  paste0("RMS_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_enr_genes <- c(combined_pass_canon[which(combined_pass_canon$pass == T & combined_pass_canon$selected == T),]$gene_id, combined_pass_novel[which(combined_pass_novel$pass == T),]$gene_id)
+
+fn_enr_genes <- c(fn_pass_canon[which(fn_pass_canon$pass == T & fn_pass_canon$selected == T),]$gene_id,
+                  fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id)
+
+fp_enr_genes <- c(fp_pass_canon[which(fp_pass_canon$pass == T & fp_pass_canon$selected == T),]$gene_id,
+                  fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id)
+
+picked_genes <- unique(c(combined_enr_genes,fp_enr_genes,fn_enr_genes))
+
+fp_picked_genes <- unique(c(combined_enr_genes,fp_enr_genes))[!(unique(c(combined_enr_genes,fp_enr_genes)) %in% fn_enr_genes)]
+
+fusion_genes <- unique(gtf_df[which(gtf_df$gene_name %in% c("PAX3","PAX7","FOXO1")),]$gene_id)
+
+```
+
+```{r}
+
+dds_fp <- readRDS(paste(rds_loc,"RMS_FP_counts.RDS", sep = "/"))
+dds_fp <- DESeq2::estimateSizeFactors(dds_fp)
+fp_counts <- DESeq2::counts(dds_fp, normalized = T)
+fp_counts <- fp_counts[which(rownames(fp_counts) %in% c(picked_genes,fusion_genes)),]
+
+# Number of genes
+num_genes <- nrow(fp_counts)
+
+# Initialize an empty matrix for correlations
+cor_matrix <- matrix(NA, nrow = num_genes, ncol = num_genes)
+
+# Calculate correlations
+for (i in 1:num_genes) {
+  for (j in 1:num_genes) {
+    cor_matrix[i, j] <- cor(fp_counts[i,], fp_counts[j,],method = "spearman")
+  }
+}
+
+rownames(cor_matrix) <- rownames(fp_counts)
+colnames(cor_matrix) <- rownames(fp_counts)
+
+annot_col <- data.frame(gene_id = rownames(fp_counts)) %>%
+  dplyr::left_join(gtf_df[,c("gene_id","gene_biotype")]) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(fusion = ifelse(gene_id %in% fusion_genes,"A","B"),
+                gene_biotype = ifelse(is.na(gene_biotype),"stringtie",gene_biotype),
+                enrichment = ifelse(gene_id %in% fp_enr_genes & 
+                                      gene_id %in% fn_enr_genes & 
+                                      gene_id %in% combined_enr_genes,"combined",
+                                    ifelse(gene_id %in% fp_enr_genes, "FP",
+                                    ifelse(gene_id %in% fn_enr_genes, "FN",
+                                           "combined")))) %>%
+  dplyr::mutate(gene_biotype = factor(gene_biotype,levels = unique(gene_biotype)))
+rownames(annot_col) <- annot_col$gene_id
+
+annot_col$gene_id <- NULL
+
+anno_cols <- list(gene_biotype = setNames(viridis::rocket(n = 4),unique(annot_col$gene_biotype)),
+                  enrichment = setNames(c("#C04037","#266566","#FFB07C"),unique(annot_col$enrichment)),
+                  fusion = setNames(viridis::plasma(n = 2),unique(annot_col$fusion))
+                  )
+
+ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col,
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+
+ha_row = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col,
+  which = "row",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+
+row.names(cor_matrix) <- ifelse(row.names(cor_matrix) %in% fusion_genes,
+                                gtf_df$gene_name[match(row.names(cor_matrix),gtf_df$gene_id)],"")
+
+colnames(cor_matrix) <- ifelse(colnames(cor_matrix) %in% fusion_genes,
+                                gtf_df$gene_name[match(colnames(cor_matrix),gtf_df$gene_id)],"")
+
+heatmap_cols <- rev(RColorBrewer::brewer.pal(11,"RdBu"))
+breaks <- seq(-1, 1, length.out = 11)
+
+ComplexHeatmap::Heatmap(cor_matrix, 
+                        top_annotation = ha,
+                        cluster_rows = T,
+                        cluster_columns =  T,
+                        show_row_names = T,
+                        show_row_dend = F,
+                        show_column_names = T,
+                        show_column_dend = F,
+                        heatmap_legend_param = list(
+    legend_direction = "vertical",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Spearman\ncor"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols),
+  use_raster = F
+  )
+
+
+```

@@ -1,0 +1,133 @@
+---
+title: "Annotate ChIP-seq peaks"
+author: "JD"
+date: "2023-11-27"
+output: html_document
+---
+
+```{r library}
+library(magrittr)
+library(dplyr)
+library(rtracklayer)
+library(GenomicRanges)
+```
+
+```{r parameters}
+basedir <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis"
+bed <- paste(basedir,"05_chipseq", "analysis","macs2","RH4_PAX3-FOXO1_summits.bed", sep = "/")
+gtf <- paste(basedir,"01_rnaseq","analysis", "rnaseq_pipeline","customannotation" ,
+             "RMS_full_novel_filtered_corrected.sorted.gtf" , sep = "/")
+fp_target_genes = read.delim(file = paste(basedir, "documentation","FP_target_genes.txt", sep = "/"), header = T)
+```
+
+```{r load FP enriched genes}
+fp_pass_novel <- read.delim(paste(basedir,"01_rnaseq","results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fp_pass_canon <- read.delim(paste(basedir,"01_rnaseq","results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+fn_pass_novel <- read.delim(paste(basedir,"01_rnaseq","results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fn_pass_canon <- read.delim(paste(basedir,"01_rnaseq","results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_novel <- read.delim(paste(basedir,"01_rnaseq","results","quantification","old",
+                                  paste0("RMS_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_canon <- read.delim(paste(basedir,"01_rnaseq","results","quantification","old",
+                                  paste0("RMS_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_enr_genes <- c(combined_pass_canon[which(combined_pass_canon$pass == T & combined_pass_canon$selected == T),]$gene_id, combined_pass_novel[which(combined_pass_novel$pass == T),]$gene_id)
+fn_enr_genes <- c(fn_pass_canon[which(fn_pass_canon$pass == T & fn_pass_canon$selected == T),]$gene_id,
+                  fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id)
+fp_enr_genes <- c(fp_pass_canon[which(fp_pass_canon$pass == T & fp_pass_canon$selected == T),]$gene_id,
+                  fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id)
+
+picked_fp_enr_genes <- c(fp_enr_genes,combined_enr_genes)
+picked_fp_enr_genes <- picked_fp_enr_genes[!(picked_fp_enr_genes %in% fn_enr_genes)]
+
+```
+
+```{r load data}
+rms_gtf <- rtracklayer::import.gff(gtf)
+
+rms_df <- as.data.frame(rms_gtf) %>%
+  dplyr::filter(type == "transcript" & gene_biotype %in% c("protein_coding","lncRNA","stringtie"))
+
+fp_peaks <- rtracklayer::import.bed(bed)
+```
+
+```{r extend chipseq peaks}
+
+fp_peaks_1kb <- flank(fp_peaks, width=1000, both=TRUE)
+
+fp_peaks_10kb <- flank(fp_peaks, width=10000, both=TRUE)
+
+fp_peaks_100kb <- flank(fp_peaks, width=100000, both=TRUE)
+
+```
+
+```{r annotate genes with peaks}
+
+rms_genes <- rms_gtf[which(rms_gtf$type == "transcript" & rms_gtf$gene_biotype %in% c("protein_coding","lncRNA","stringtie"))]
+
+direct_hits <- GenomicRanges::findOverlaps(query = rms_genes,
+                                  subject = fp_peaks)
+
+hits_1kb <- GenomicRanges::findOverlaps(query = rms_genes,
+                                  subject = fp_peaks_1kb)
+
+hits_10kb <- GenomicRanges::findOverlaps(query = rms_genes,
+                                  subject = fp_peaks_10kb)
+
+hits_100kb <- GenomicRanges::findOverlaps(query = rms_genes,
+                                  subject = fp_peaks_100kb)
+
+fp_targets <- as.data.frame(rms_genes[queryHits(direct_hits)])
+fp_targets_1kb <- as.data.frame(rms_genes[queryHits(hits_1kb)])
+fp_targets_10kb <- as.data.frame(rms_genes[queryHits(hits_10kb)])
+fp_targets_100kb <- as.data.frame(rms_genes[queryHits(hits_100kb)])
+
+```
+
+```{r write gene list}
+
+novel_fp_gene_targets <- data.frame(gene_id = rms_df$gene_id,
+                         gene_symbol = rms_df$gene_name,
+                         gene_biotype = rms_df$gene_biotype) %>%
+  dplyr::mutate(peak_annotation = ifelse(gene_id %in% fp_targets$gene_id,"within_gene",
+                                         ifelse(gene_id %in% fp_targets_1kb$gene_id,"within_1kb",
+                                                ifelse(gene_id %in% fp_targets_10kb$gene_id,"within_10kb",
+                                                       ifelse(gene_id %in% fp_targets_100kb$gene_id,"within_100kb","no_hit")))),
+                curated_annotation = ifelse(gene_id %in% fp_target_genes$gene_id,"curated","NA"),
+                fp_enriched = ifelse(gene_id %in% picked_fp_enr_genes,"enriched","NA")) %>%
+  dplyr::filter(!(peak_annotation == "no_hit")) %>%
+  dplyr::left_join(rms_df[which(rms_df$type == "gene_id"),c("seqnames","start","end","gene_id")]) %>%
+  dplyr::distinct()
+
+# Annotation with curated FP target genes
+table(novel_fp_gene_targets$curated_annotation,novel_fp_gene_targets$peak_annotation)
+
+# Annotation with gene biotype
+table(novel_fp_gene_targets$gene_biotype,novel_fp_gene_targets$peak_annotation)
+
+# Annotation with FP-enriched genes
+table(novel_fp_gene_targets$fp_enriched,novel_fp_gene_targets$peak_annotation)
+
+# Annotation with gene biotype for FP-enriched genes
+table(novel_fp_gene_targets[which(novel_fp_gene_targets$fp_enriched == "enriched"),]$gene_biotype,
+      novel_fp_gene_targets[which(novel_fp_gene_targets$fp_enriched == "enriched"),]$peak_annotation)
+
+# Annotation with gene biotype for FP-enriched genes that are also curated
+table(novel_fp_gene_targets[which(novel_fp_gene_targets$fp_enriched == "enriched" & 
+                                    novel_fp_gene_targets$curated_annotation == "curated"),]$gene_biotype,
+      novel_fp_gene_targets[which(novel_fp_gene_targets$fp_enriched == "enriched" & 
+                                    novel_fp_gene_targets$curated_annotation == "curated"),]$peak_annotation)
+```
+

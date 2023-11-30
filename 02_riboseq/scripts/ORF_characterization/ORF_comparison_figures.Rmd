@@ -28,6 +28,8 @@ savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/results"
 plot_col <- rev(c(c(RColorBrewer::brewer.pal(12, "Set3")[c(1,3:8,10:12)]), 
                   c(RColorBrewer::brewer.pal(12, "Paired"))[c(2,10,12)]))
 
+orfquant_orfs <- grep("ORG",list.dirs("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq/analysis/ORFquant", recursive = F), value = T)
+
 # RMS GTF
 gtf_file = "/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221020_JD_quant_tumor_cohorts/data/processed/customannotation/RMS_full_novel_filtered_corrected.sorted.gtf"
 custom_annotation <- import(gtf_file)
@@ -54,6 +56,11 @@ patient_orf_loc = paste(savedir,"patient","RMS_patient_all_ORFs.txt",sep="/")
 tis_seq_table <- read.delim(file = paste(savedir,"patient/patient_sequence_table.txt", sep = "/"))
 patient_samples = 19
 
+# Combined ORFs
+combined_orf_loc = paste(savedir,"combined","RMS_combined_all_ORFs.txt",sep="/")
+rms_seq_table <- read.delim(file = paste(savedir,"combined/combined_sequence_table.txt", sep = "/"))
+combined_samples = 50
+
 # RMS specific genes
 rms_canon <- read.delim("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/results/quantification/RMS_canon_enriched_matrix.txt", sep = ";")
 rms_canon_pass <- rms_canon %>% dplyr::filter(pass == T & selected == T)
@@ -74,6 +81,19 @@ get_transcripts <- function(orf_list, gen_id) {
   m_cols <- mcols(orf_list) %>% as.data.frame() %>% 
     mutate(orf_names = names(orf_list)) %>% 
     dplyr::filter(gene_id == gen_id)
+  sel_orf <- orf_list[m_cols$orf_names] %>% as.data.frame() %>% 
+    group_by(group_name) %>% mutate(exon = row_number())
+  sel_orf_g <- sel_orf %>% makeGRangesFromDataFrame()
+  sel_orf_g$exon <- sel_orf$exon
+  genome(sel_orf_g) <- "hg38"
+  return(sel_orf_g)
+}
+
+get_transcripts <- function(orf_list, gen_id,orfid) {
+  # Select all ORFs from a given gene id
+  m_cols <- mcols(orf_list) %>% as.data.frame() %>% 
+    mutate(orf_names = names(orf_list)) %>% 
+    dplyr::filter(gene_id == gen_id & orf_id == orfid)
   sel_orf <- orf_list[m_cols$orf_names] %>% as.data.frame() %>% 
     group_by(group_name) %>% mutate(exon = row_number())
   sel_orf_g <- sel_orf %>% makeGRangesFromDataFrame()
@@ -123,6 +143,305 @@ patient_orfs <- interesting_orfs %>%
   dplyr::mutate(orf_type = ifelse(gene_biotype == "lncRNA","lncORF",orf_type)) %>%
   dplyr::distinct()
 
+interesting_orfs <- read.delim(combined_orf_loc, sep =";")
+
+combined_orfs <- interesting_orfs %>%
+  dplyr::group_by(orf_id) %>%
+  dplyr::summarise(median_psites = median(p_sites),
+                   sum_psites = sum(p_sites),
+                   mean_pval = mean(p_value)) %>%
+  dplyr::left_join(interesting_orfs[,-c(9,10,12,16)]) %>%
+  replace(is.na(x = .), "c") %>%
+  dplyr::mutate(orf_type = ifelse(gene_biotype == "lncRNA","lncORF",orf_type)) %>%
+  dplyr::distinct()
+
+```
+
+# COMBINED
+
+
+## ORF occurrence
+```{r TUM-ORF occurrence plot}
+plot_data <- combined_orfs %>%
+  dplyr::mutate(orf_type = factor(orf_type,levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncORF", "novel")))
+
+counts <- plot_data %>%
+  group_by(orf_type) %>%
+  summarise(count = n())
+
+  plot_data %>%
+  ggplot(aes(x = count, fill = orf_type, col = orf_type)) +
+  geom_density(alpha = 0.3) +
+  geom_text(data = counts, aes(x = Inf, y = Inf, label = paste("n =", count)),
+            hjust = 1, vjust = 2, size = 3, col = "black") +
+  scale_x_continuous(breaks = seq(2,combined_samples,4)) +
+  scale_color_manual(values = plot_col) +
+  scale_fill_manual(values = plot_col) +
+  facet_wrap(~ orf_type, scales = "free_y") +
+  theme_classic() +
+    theme(legend.position="none") +
+    theme(axis.title.y = element_blank())
+  
+ggsave(filename = "ORF_occurrence.pdf",
+       path = paste(savedir, "combined",sep="/"),
+       device = "pdf",
+       height = 5,
+       width = 7)
+```
+## ORF P-sites
+
+```{r}
+plot_data <- tumoroid_orfs %>%
+  dplyr::mutate(orf_type = factor(orf_type,levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncORF", "novel")))
+
+counts <- plot_data %>%
+  group_by(orf_type) %>%
+  summarise(count = n())
+
+plot_data %>%
+  ggplot(aes(x = median_psites, fill = orf_type, col = orf_type)) +
+  geom_density(alpha = 0.3) +
+  geom_text(data = counts, aes(x = Inf, y = Inf, label = paste("n =", count)),
+            hjust = 1, vjust = 2, size = 3, col = "black") +
+  scale_color_manual(values = plot_col) +
+  scale_fill_manual(values = plot_col) +
+    scale_x_continuous(trans = 'log10',
+                       labels = scales::number_format(scale = 1)) +
+  facet_wrap(~ orf_type, scales = "free_y") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(legend.position="none") +
+    theme(axis.title.y = element_blank())
+
+ggsave(filename = "ORF_Psites.pdf",
+       path = paste(savedir, "tumoroid",sep="/"),
+       device = "pdf",
+       height = 5,
+       width = 7)
+```
+
+
+```{r}
+table(patient_orfs$orf_id %in% tumoroid_orfs$orf_id)
+```
+
+## ORF length
+
+```{r}
+
+plot_data <- tum_seq_table %>%
+  dplyr::select(width,orf_id) %>%
+  dplyr::left_join(tumoroid_orfs[,c("orf_id","orf_type")]) %>%
+  dplyr::mutate(orf_type = factor(orf_type,levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncORF", "novel")))
+
+counts <- plot_data %>%
+  group_by(orf_type) %>%
+  summarise(count = n())
+
+  plot_data %>%
+  ggplot(aes(x = width, fill = orf_type, col = orf_type)) +
+    geom_density(alpha = 0.3) +
+    geom_text(data = counts, aes(x = Inf, y = Inf, label = paste("n =", count)),
+            hjust = 1, vjust = 2, size = 3, col = "black") +
+    scale_color_manual(values = plot_col) +
+    scale_x_continuous(trans = 'log2') +
+    scale_fill_manual(values = plot_col) +
+    facet_wrap(~ orf_type, scales = "free_y") +
+    theme_classic() +
+    theme(legend.position="none") +
+    theme(axis.title.y = element_blank())
+  
+ggsave(filename = "ORF_length.pdf",
+       path = paste(savedir, "tumoroid",sep="/"),
+       device = "pdf",
+       height = 5,
+       width = 7)
+```
+
+## ORF P / AA
+
+```{r}
+
+plot_data <- tum_seq_table %>%
+  dplyr::select(width,orf_id) %>%
+  dplyr::left_join(tumoroid_orfs[,c("orf_id","orf_type","sum_psites")]) %>%
+  dplyr::mutate(orf_type = factor(orf_type,
+                                  levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncORF", "novel")),
+      psite_residue = sum_psites / width)
+
+
+counts <- plot_data %>%
+  group_by(orf_type) %>%
+  summarise(count = n())
+
+  plot_data %>%
+  ggplot(aes(x = psite_residue, fill = orf_type, col = orf_type)) +
+    geom_vline(xintercept = 1, alpha = 0.4) +
+    geom_density(alpha = 0.3) +
+    geom_text(data = counts, aes(x = Inf, y = Inf, label = paste("n =", count)),
+            hjust = 1, vjust = 2, size = 3, col = "black") +
+    scale_color_manual(values = plot_col) +
+    scale_x_continuous(trans = 'log10',
+                       labels = scales::number_format(scale = 1)) +
+    scale_fill_manual(values = plot_col) +
+    facet_wrap(~ orf_type, scales = "free_y") +
+    theme_classic() +
+    theme(legend.position="none") +
+    theme(axis.title.y = element_blank()) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+ggsave(filename = "ORF_Psite_per_AA.pdf",
+       path = paste(savedir, "tumoroid",sep="/"),
+       device = "pdf",
+       height = 5,
+       width = 7)
+
+```
+
+## SPEC ORF P / AA
+
+```{r}
+plot_data <- tum_seq_table %>%
+  dplyr::select(width,orf_id) %>%
+  dplyr::left_join(tumoroid_orfs[,c("orf_id","orf_type","sum_psites","gene_id","class_code")]) %>%
+  replace(is.na(x = .), "c") %>%
+  dplyr::filter(!(class_code == "k")) %>%
+  dplyr::filter(gene_id %in% c(rms_canon_pass$gene_id,rms_novel_pass$gene_id)) %>%
+  dplyr::mutate(orf_type = factor(orf_type,
+                                  levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncORF", "novel")),
+      psite_residue = sum_psites / width)
+
+
+counts <- plot_data %>%
+  group_by(orf_type) %>%
+  summarise(count = n())
+
+  plot_data %>%
+  ggplot(aes(x = psite_residue, fill = orf_type, col = orf_type)) +
+    geom_vline(xintercept = 1, alpha = 0.4) +
+    geom_density(alpha = 0.3) +
+    geom_text(data = counts, aes(x = Inf, y = Inf, label = paste("n =", count)),
+            hjust = 1, vjust = 2, size = 3, col = "black") +
+    scale_color_manual(values = plot_col) +
+    scale_x_continuous(trans = 'log10',
+                       labels = scales::number_format(scale = 1)) +
+    scale_fill_manual(values = plot_col) +
+    facet_wrap(~ orf_type, scales = "free_y") +
+    theme_classic() +
+    theme(legend.position="none") +
+    theme(axis.title.y = element_blank()) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+ggsave(filename = "Spec_ORF_Psite_per_AA.pdf",
+       path = paste(savedir, "tumoroid",sep="/"),
+       device = "pdf",
+       height = 5,
+       width = 7)
+```
+
+## FP ORF P / AA
+
+```{r}
+
+plot_data <- tum_seq_table %>%
+  dplyr::select(width,orf_id) %>%
+  dplyr::left_join(tumoroid_orfs[,c("orf_id","orf_type","sum_psites","gene_id","class_code")]) %>%
+  replace(is.na(x = .), "c") %>%
+  dplyr::filter(!(class_code == "k")) %>%
+  dplyr::filter(gene_id %in% rownames(rms_fp_pass)) %>%
+  dplyr::mutate(orf_type = factor(orf_type,
+                                  levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncORF", "novel")),
+      psite_residue = sum_psites / width)
+
+
+counts <- plot_data %>%
+  group_by(orf_type) %>%
+  summarise(count = n())
+
+  plot_data %>%
+  ggplot(aes(x = psite_residue, fill = orf_type, col = orf_type)) +
+    geom_vline(xintercept = 1, alpha = 0.4) +
+    geom_density(alpha = 0.3) +
+    geom_text(data = counts, aes(x = Inf, y = Inf, label = paste("n =", count)),
+            hjust = 1, vjust = 2, size = 3, col = "black") +
+    scale_color_manual(values = plot_col) +
+    scale_x_continuous(trans = 'log10',
+                       labels = scales::number_format(scale = 1)) +
+    scale_fill_manual(values = plot_col) +
+    facet_wrap(~ orf_type, scales = "free_y") +
+    theme_classic() +
+    theme(legend.position="none") +
+    theme(axis.title.y = element_blank()) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+ggsave(filename = "FP_ORF_Psite_per_AA.pdf",
+       path = paste(savedir, "tumoroid",sep="/"),
+       device = "pdf",
+       height = 5,
+       width = 7)
+```
+
+## FP SPEC ORF P / AA
+
+```{r}
+
+plot_data <- tum_seq_table %>%
+  dplyr::select(width,orf_id) %>%
+  dplyr::left_join(tumoroid_orfs[,c("orf_id","orf_type","sum_psites","gene_id","class_code")]) %>%
+  replace(is.na(x = .), "c") %>%
+  dplyr::filter(!(class_code == "k")) %>%
+  dplyr::filter(gene_id %in% rownames(rms_fp_pass) & 
+                  gene_id %in% c(rms_canon_pass$gene_id,rms_novel_pass$gene_id)) %>%
+  dplyr::mutate(orf_type = factor(orf_type,
+                                  levels = c("ORF_annotated", 
+      "N_extension", "N_truncation", "C_extension", "C_truncation", 
+      "NC_extension", "uORF", "overl_uORF", "nested_ORF", 
+      "overl_dORF", "dORF", "lncORF", "novel")),
+      psite_residue = sum_psites / width)
+
+
+counts <- plot_data %>%
+  group_by(orf_type) %>%
+  summarise(count = n())
+
+  plot_data %>%
+  ggplot(aes(x = psite_residue, fill = orf_type, col = orf_type)) +
+    geom_histogram(stat = "count", alpha = 0.3) +
+    geom_text(data = counts, aes(x = Inf, y = Inf, label = paste("n =", count)),
+            hjust = 1, vjust = 2, size = 3, col = "black") +
+    scale_color_manual(values = plot_col) +
+    scale_x_continuous(trans = 'log10',
+                       labels = scales::number_format(scale = 1)) +
+    scale_fill_manual(values = plot_col) +
+    facet_wrap(~ orf_type, scales = "free_y") +
+    theme_classic() +
+    theme(legend.position="none") +
+    theme(axis.title.y = element_blank()) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+ggsave(filename = "FP_SPEC_ORF_Psite_per_AA.pdf",
+       path = paste(savedir, "tumoroid", sep="/"),
+       device = "pdf",
+       height = 5,
+       width = 7)
 ```
 
 # TUMOROID
@@ -475,6 +794,11 @@ Need some repetition, as it didnt really work out
 
 ```{r}
 
+p_sites_data_list <- readRDS(ile = paste(savedir,"tumoroid","psite_data.RDS", sep = "/"))
+
+```
+
+```{r}
 dtrack_sum_plus <- DataTrack(range=p_sites_data_list[[1]],
                                      name = p_sites_names[1],
                                      type = "h",
@@ -595,7 +919,6 @@ dtrack_avg_min <- DataTrack(range=p_sites_data_list[[8]],
                                      col = colors[2],
                                      lwd = 1)
 
-
 dtrack_sum_FN_min <- DataTrack(range=p_sites_data_list[[9]],
                                      name = p_sites_names[9],
                                      type = "h",
@@ -626,7 +949,6 @@ dtrack_avg_FN_min <- DataTrack(range=p_sites_data_list[[10]],
                                      fill.histogram = colors[2],
                                      col = colors[2],
                                      lwd = 1)
-
 
 dtrack_sum_FP_min <- DataTrack(range=p_sites_data_list[[11]],
                                      name = p_sites_names[11],
@@ -662,30 +984,46 @@ dtrack_avg_FP_min <- DataTrack(range=p_sites_data_list[[12]],
 ### Plot ORF loci
 
 ```{r}
-gene_id = "MSTRG.26303"
-transcript_id = paste0(gene_id,".2")
+gene_id = "ENSG00000166845"
+transcript_id = "ENST00000648616"
+orf_id = paste0(transcript_id, "_103_195")
+#transcript_id = paste0(gene_id,".2")
 
 pick_orf_gtf <- data.frame(sample_id = 98:129,
                            index = 1:32)
 
-orfq_transcripts <- get_transcripts(orfquant_orfs[[9]], gene_id) # get the correct ORF file
+orfq_transcripts <- get_transcripts(orfquant_orfs[[14]], gene_id,orfid = orf_id) # get the correct ORF file
 chosen_transcript <- custom_annotation[which(custom_annotation$transcript_id == transcript_id),]
 
+# For transcript
 start_pos = min(start(chosen_transcript))
 end_pos =   max(end(chosen_transcript))
 chr = unique(seqnames(chosen_transcript))
-gen <- unique(genome(orfq_transcripts))
+gen = unique(genome(orfq_transcripts))
+
+# For ORF view
+start_pos = min(start(orfq_transcripts))
+end_pos =   max(end(orfq_transcripts))
+chr = unique(seqnames(chosen_transcript))
+gen = unique(genome(orfq_transcripts))
+
+strand = as.character(unique(strand(chosen_transcript)))
 
 ORF_track_ORFq <- AnnotationTrack(orfq_transcripts, genome = gen, showId = F, 
                                   shape = "box", name = "ORF\nlocus", 
                                   fill = "cornflowerblue", 
                                   col = "cornflowerblue", rotation.title = 0)
+
+print(strand)
 ```
 
 ```{r plot function}
 
 plot_orf_locus <- function(track_plus,
                            track_minus,
+                           start_pos,
+                           end_pos,
+                           chr,
                            psite_max = 50,
                            prefix = "",
                            gene_id,
@@ -725,7 +1063,45 @@ plot_orf_locus <- function(track_plus,
 }
 ```
 
+#### FN-FP sum compare
+
+```{r}
+plot_orf_locus(track_plus = dtrack_sum_FP_plus,
+               track_minus = dtrack_sum_FN_plus,
+               start_pos = start_pos,
+               end_pos = end_pos,
+               chr = chr,
+               psite_max = 100,
+               prefix = "FP-FN_sum_plus",
+               gene_id = gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
+```
+
+```{r}
+plot_orf_locus(track_plus = dtrack_sum_FP_min,
+               track_minus = dtrack_sum_FN_min,
+               psite_max = 50,
+               prefix = "FP-FN_sum_minus",
+               gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
+```
+
 #### Sum ALL
+
+```{r}
+plot_orf_locus(track_plus = dtrack_sum_plus,
+               track_minus = dtrack_sum_min,
+               psite_max = 50,
+               prefix = "sum",
+               gene_id,
+               ORF_track_ORFq = ORF_track_ORFq,
+               transcript_track = transcript_track
+               )
+```
 
 #### AVG ALL
 
