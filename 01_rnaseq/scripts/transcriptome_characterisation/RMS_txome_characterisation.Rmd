@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r parameters}
-wd = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis"
+wd = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
 savedir = paste(wd,"01_rnaseq/results/rnaseq_pipeline", sep = "/")
 library(magrittr)
 library(ggplot2)
@@ -14,7 +14,7 @@ library(ggplot2)
 
 ```{r}
 
-gtf_df <- as.data.frame(rtracklayer::import.gff(paste(wd,"/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.gtf", sep = "/")))
+gtf_df <- as.data.frame(rtracklayer::import.gff(paste(wd,"01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")))
 
 # Parse some of the biotypes in their own group
 biotype_data <- gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
@@ -48,4 +48,46 @@ ggsave(filename = paste(savedir,"RMS_TX_GTF.pdf",sep="/"),
        height = 4,
        width = 8)
 
+```
+
+
+```{r enriched}
+novel_enriched <- unique(unlist(venn_novel))
+canon_enriched <- unique(unlist(venn_canon))
+
+enriched_data <- gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
+  dplyr::filter(gene_id %in% c(canon_enriched,novel_enriched)) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(gene_biotype = ifelse(gene_biotype == "stringtie",class_code,ifelse(grepl("pseudo",gene_biotype),"pseudogene",gene_biotype)),
+                gene_biotype = factor(gene_biotype, levels = c("protein_coding","lncRNA" , "pseudogene","x" , "y" , "i","u")))
+
+enriched_data <- enriched_data[!(duplicated(enriched_data$gene_id)),]
+
+table(enriched_data$gene_biotype)
+
+ggplot(enriched_data, aes(x = gene_biotype, y = after_stat(count), fill = gene_biotype)) +
+  geom_bar() +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -0.2) +
+  scale_fill_manual(values = viridis::viridis(7, begin = 0.8, end = 0.2)) +
+  theme_classic() +
+  scale_x_discrete(guide = guide_axis(angle = 90))
+```
+
+```{r translated enriched RMS genes}
+enriched_data <- gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
+  dplyr::filter(gene_id %in% unique(orfquant_rms_df$gene_id)) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(gene_biotype = ifelse(gene_biotype == "stringtie",class_code,ifelse(grepl("pseudo",gene_biotype),"pseudogene",gene_biotype)),
+                gene_biotype = factor(gene_biotype, levels = c("protein_coding","lncRNA" , "pseudogene","x" , "y" , "i","u")))
+
+enriched_data <- enriched_data[!(duplicated(enriched_data$gene_id)),]
+
+table(enriched_data$gene_biotype)
+
+ggplot(enriched_data, aes(x = gene_biotype, y = after_stat(count), fill = gene_biotype)) +
+  geom_bar() +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = -0.2) +
+  scale_fill_manual(values = viridis::viridis(7, begin = 0.8, end = 0.2)) +
+  theme_classic() +
+  scale_x_discrete(guide = guide_axis(angle = 90))
 ```

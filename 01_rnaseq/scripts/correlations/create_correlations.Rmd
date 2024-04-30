@@ -21,13 +21,15 @@ select enriched in FP-RMS
 Use FP-RMS counts
 
 ```{r parameters}
+set.seed(24)
+
 basedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq"
 rds_loc = paste(basedir,'analysis','quantification','deseq2',sep="/")
 
 gtf = rtracklayer::import.gff(paste(basedir, "analysis", "rnaseq_pipeline", 
             "customannotation","RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/"))
 gtf_df <- as.data.frame(gtf) %>%
-  dplyr::filter(type == "gene")
+  dplyr::filter(type == "transcript")
 
 rms_fp_cohort = read.delim(paste(basedir, "documentation", "RMS_fp.txt", sep = "/"), sep = ";")
 rms_fp_org = read.delim(paste(basedir, "documentation", "RMS_fp_org.txt", sep = "/"), sep = ";")
@@ -48,15 +50,15 @@ count_files <- list.files(paste(basedir,"analysis","quantification","salmon_quan
 names(count_files) <- basename(gsub("/quant.sf","",count_files))
 
 txdb = paste(basedir,"analysis","rnaseq_pipeline","customannotation",
-             paste0(tumor_type,"_container"),
-             paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+             "RMS_container",
+             "RMS_full_novel_filtered_corrected.gtf_TxDb", sep = "/")
 
 txdb <- AnnotationDbi::loadDb(txdb)
 k <- keys(txdb, keytype = "TXNAME")
 tx2gene <- select(txdb, k, "GENEID", "TXNAME")
 
 count_files_fp <- count_files[which(names(count_files) %in% rms_meta$sample_id)]
-rms_meta <- rms_meta[which(rms_meta$sample_id %in% names(count_files_rms)),]
+rms_meta <- rms_meta[which(rms_meta$sample_id %in% names(count_files_fp)),]
 
 txi_rms <- tximport::tximport(count_files_fp, type = "salmon", 
                               tx2gene = tx2gene, 
@@ -75,6 +77,21 @@ dds_fp <- DESeq2::DESeqDataSetFromTximport(txi = txi_rms,
 
 saveRDS(dds_fp,
         file = paste(rds_loc,"RMS_FP_counts.RDS", sep = "/"))
+
+```
+
+Use TXImport for TPMs to see which genes are where expressed
+
+```{r subset on expressed genes}
+expression_cutoff = 1
+
+tpm <- txi_rms$abundance
+
+mean_tpms <- rowMeans(tpm)
+
+table(mean_tpms > 1)
+
+expr_genes <- names(mean_tpms[which(mean_tpms > expression_cutoff)])
 
 ```
 
@@ -113,16 +130,22 @@ picked_genes <- unique(c(combined_enr_genes,fp_enr_genes,fn_enr_genes))
 
 fp_picked_genes <- unique(c(combined_enr_genes,fp_enr_genes))[!(unique(c(combined_enr_genes,fp_enr_genes)) %in% fn_enr_genes)]
 
-fusion_genes <- unique(gtf_df[which(gtf_df$gene_name %in% c("PAX3","PAX7","FOXO1")),]$gene_id)
+fusion_genes <- unique(gtf_df[which(gtf_df$gene_name %in% c("PAX3","PAX7","FOXO1","MYOD1","MYCN","MYOG") | gtf_df$gene_id == "MSTRG.26303"),]$gene_id)
 
 ```
+
+Check for TPM per gene and see where the specific TPMs plot using an additional annotation
 
 ```{r}
 
 dds_fp <- readRDS(paste(rds_loc,"RMS_FP_counts.RDS", sep = "/"))
 dds_fp <- DESeq2::estimateSizeFactors(dds_fp)
+
+keep_genes <- c(fp_picked_genes,fusion_genes)
+keep_genes <- keep_genes[keep_genes %in% expr_genes]
+
 fp_counts <- DESeq2::counts(dds_fp, normalized = T)
-fp_counts <- fp_counts[which(rownames(fp_counts) %in% c(picked_genes,fusion_genes)),]
+fp_counts <- fp_counts[which(rownames(fp_counts) %in% keep_genes),]
 
 # Number of genes
 num_genes <- nrow(fp_counts)
@@ -143,8 +166,9 @@ colnames(cor_matrix) <- rownames(fp_counts)
 annot_col <- data.frame(gene_id = rownames(fp_counts)) %>%
   dplyr::left_join(gtf_df[,c("gene_id","gene_biotype")]) %>%
   dplyr::distinct() %>%
-  dplyr::mutate(fusion = ifelse(gene_id %in% fusion_genes,"A","B"),
-                gene_biotype = ifelse(is.na(gene_biotype),"stringtie",gene_biotype),
+  dplyr::mutate(picked = ifelse(gene_id %in% fusion_genes,"A","B"),
+                gene_biotype = ifelse(is.na(gene_biotype),"stringtie",
+                                      ifelse(gene_biotype == "transcribed_unprocessed_pseudogene","pseudogene",gene_biotype)),
                 enrichment = ifelse(gene_id %in% fp_enr_genes & 
                                       gene_id %in% fn_enr_genes & 
                                       gene_id %in% combined_enr_genes,"combined",
@@ -158,20 +182,12 @@ annot_col$gene_id <- NULL
 
 anno_cols <- list(gene_biotype = setNames(viridis::rocket(n = 4),unique(annot_col$gene_biotype)),
                   enrichment = setNames(c("#C04037","#266566","#FFB07C"),unique(annot_col$enrichment)),
-                  fusion = setNames(viridis::plasma(n = 2),unique(annot_col$fusion))
+                  picked = setNames(c("white","black"),unique(annot_col$picked))
                   )
 
 ha = ComplexHeatmap::HeatmapAnnotation(
   df = annot_col,
   which = "column",
-  col = anno_cols,
-  show_annotation_name = F, 
-  simple_anno_size = unit(0.3, "cm")
-)
-
-ha_row = ComplexHeatmap::HeatmapAnnotation(
-  df = annot_col,
-  which = "row",
   col = anno_cols,
   show_annotation_name = F, 
   simple_anno_size = unit(0.3, "cm")
@@ -186,10 +202,11 @@ colnames(cor_matrix) <- ifelse(colnames(cor_matrix) %in% fusion_genes,
 heatmap_cols <- rev(RColorBrewer::brewer.pal(11,"RdBu"))
 breaks <- seq(-1, 1, length.out = 11)
 
-ComplexHeatmap::Heatmap(cor_matrix, 
+hm <- ComplexHeatmap::Heatmap(cor_matrix, 
                         top_annotation = ha,
                         cluster_rows = T,
                         cluster_columns =  T,
+                        column_km = 5,
                         show_row_names = T,
                         show_row_dend = F,
                         show_column_names = T,
@@ -204,5 +221,32 @@ ComplexHeatmap::Heatmap(cor_matrix,
   use_raster = F
   )
 
+ComplexHeatmap::draw(
+  hm,
+  heatmap_legend_side = "right",
+  annotation_legend_side = "right",
+  legend_grouping = "original"
+)
 
+```
+
+see which gene is next to PAX7
+
+```{r}
+genes_row <- column_order(draw(hm))
+
+for(i in 1:5) {
+  genes_row[[i]] <- rownames(fp_counts)[genes_row[[i]]]
+}
+
+table(grepl("MSTRG",genes_row[[5]]))
+
+
+genenames_row <- gtf_df$gene_name[match(genes_row,gtf_df$gene_id)]
+
+genenames_row
+
+clus_1 <- genenames_row[c(1:35,134,135)]
+clus_2 <- genenames_row[c(36:109)]
+clus_3 <- genenames_row[c(1:35,134,135)]
 ```

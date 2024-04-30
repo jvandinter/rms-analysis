@@ -1,40 +1,15 @@
 #!/bin/bash
-#SBATCH --cpus-per-task 1
-#SBATCH --job-name deseq2_results
-#SBATCH --gres=tmpspace:20G
-#SBATCH --mem=144G
-#SBATCH --time=144:00:00
-
-
-# Run this script with 'sbatch /hpc/local/Rocky8/pmc_vanheesch/small_tools/rstudio_server.sh'
-#
-# This script launches an RStudio Server Apptainer image, which can then be accessed from a local
-# workstation by following the instructions that are printed to the user's home directory.
-# This script was adapted from the Rocker project (https://www.rocker-project.org/use/singularity).
-#
-# The apptainer image is stored in '/hpc/local/Rocky8/pmc_vanheesch/singularity_images/'; this
-# script can be easily adjusted to work with images of newer R versions.
-# To download a new apptainer image, simply start an interactive job with 'srun' (apptainer
-# is only available on compute nodes), cd to the apptainer images directory, and pull the image
-# with 'apptainer pull docker://bioconductor/bioconductor_docker:devel', replacing the version number as needed.
-#
-# Be consistent with naming the apptainer image use 'rstudio_${version}_bioconductor.sif'
-# Create a directory for the version of Rstudio you want to use in
-# '/hpc/local/Rocky8/pmc_vanheesch/Rstudio_Server_Libs/' and use 'Rstudio_${version}_libs'
-# and point the version="...." below to the version of R you used for naming of the image and directory.
-#
-# Damon Hofman
-# 22-06-2022
-#
-# conversion to Rocky8 and using seperate directories for packages in different R versions
-# 06-06-2023 by Amalia Nabuurs
+#SBATCH --job-name create_count_matrix
+#SBATCH --mem=120G
+#SBATCH --time=12:00:00
+#SBATCH --gres=tmpspace:10G
 
 version="4.3.0"
 
 # Create temporary directory to be populated with directories to bind-mount in the container
 # where writable file systems are necessary. Adjust path as appropriate for your computing environment.
 singularity_dir="/hpc/local/Rocky8/pmc_vanheesch/singularity_images"
-wd="/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq"
+wd="/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq"
 workdir=${TMPDIR}
 
 mkdir -p -m 700 ${workdir}/run ${workdir}/tmp ${workdir}/var/lib/rstudio-server
@@ -67,4 +42,4 @@ export APPTAINER_BIND="${workdir}/run:/run,${workdir}/tmp:/tmp,${workdir}/databa
 export APPTAINERENV_RSTUDIO_SESSION_TIMEOUT=0
 
 apptainer exec --cleanenv ${singularity_dir}/rstudio_${version}_bioconductor.sif \
-  Rscript /hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/scripts/quantification/create_deseq2_results.R
+  Rscript ${wd}/scripts/quant_all_cohorts/create_count_matrix_all_cohorts.R

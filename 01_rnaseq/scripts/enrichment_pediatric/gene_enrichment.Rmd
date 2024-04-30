@@ -1,0 +1,386 @@
+---
+title: "RMS gene enrichment"
+author: "JD"
+date: "2023-11-09"
+output: html_document
+---
+
+```{r library}
+library(magrittr)
+library(dplyr)
+library(ComplexHeatmap)
+```
+
+
+```{r parameters}
+
+savedir_base = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/results/quantification"
+
+gtf_df <- rtracklayer::import.gff("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.sorted.gtf") %>%
+  as.data.frame() %>%
+  dplyr::filter(type == "transcript")
+```
+
+# Canon gene selection
+
+```{r}
+
+polya_feats <- read.delim("/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/gencode.v36.metadata.PolyA_feature", header = F)
+
+canon_gtf <- rtracklayer::import.gff("/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/Homo_sapiens.GRCh38.102.gtf")
+canon_df <- as.data.frame(canon_gtf) %>%
+  subset(type == "transcript")
+
+canon_gencode_table <- data.frame(gene_id = canon_df$gene_id,
+                                  gencode_id = paste(canon_df$transcript_id,canon_df$transcript_version,sep="."))
+canon_gencode_table <- canon_gencode_table[!duplicated(canon_gencode_table),]
+
+polya_feats <- dplyr::left_join(polya_feats,canon_gencode_table, by = c("V1" = "gencode_id"))
+
+t <- as.data.frame(table(canon_gtf[which(canon_gtf$type == "exon"),]$transcript_id))
+colnames(t) <- c("transcript_id",
+                "exon_count")
+
+# Each transcript has a transcript row and exon row
+gtf_count <- dplyr::left_join(as.data.frame(canon_gtf),
+                              t,
+                              by = "transcript_id")
+
+mono_transcripts <- subset(gtf_count,
+                           exon_count < 2)[,c("gene_id","transcript_id","transcript_version")]
+
+mono_transcripts$gencode <- paste(mono_transcripts$transcript_id,mono_transcripts$transcript_version,sep=".")
+mono_transcripts <- mono_transcripts[!duplicated(mono_transcripts),]
+
+selected_genes <- unique(canon_df[which(canon_df$gene_id %in% polya_feats$gene_id &
+                                   !(canon_df$gene_id %in% mono_transcripts$gene_id)),]$gene_id)
+
+```
+
+Surfaceome
+
+```{r}
+
+# Surfaceome
+surface_xl <- readxl::read_xlsx("/hpc/pmc_vanheesch/projects/Jip/custom_transcriptomes/20221014_JD_T_ALL/analysis/surfaceome_expression/pone.0121314.s003.xlsx")
+surface_xl$`UniProt Cell surface` <- ifelse(is.na(surface_xl$`UniProt Cell surface`) ,F,T)
+
+gene_name_id <- as.data.frame(subset(gtf_df, type == "transcript"))[,c("gene_name","gene_id","gene_biotype")] %>% dplyr::distinct()
+
+gene_metadata <- dplyr::left_join(gene_name_id, 
+                                 surface_xl, 
+                                 by = c("gene_name" = "ENTREZ gene symbol")) %>%
+  dplyr::mutate(tm_domain = ifelse(grepl("1",`CSPA category`),
+                                  "high_confidence",
+                                  ifelse(
+                                    grepl("2",`CSPA category`),
+                                    "putative",
+                                    "unspecific")))
+
+```
+
+```{r functions}
+combine_results <- function(results_location,cohort,sample_group,result_type) {
+  
+  res_loc = list.files(results_location, full.names = T, pattern = cohort)
+  
+  l = lapply(res_loc, function(x) {
+    df = read.table(file = x, sep = " ")
+    df = as.data.frame(df[,c(result_type)])
+    colnames(df) = gsub(".txt","",
+                        gsub(paste0(cohort,"_",sample_group,"_"),"",basename(x)))
+    return(df)
+  })
+  
+  results_df <- do.call(cbind,l)
+  rownames(results_df) <- rownames(read.table(res_loc[[1]]))
+  
+  return(results_df)
+}
+```
+
+# Fusion positive
+
+```{r}
+savedir = paste(savedir_base,"FP-patient", sep = "/")
+```
+
+## Output
+
+Load various group LFC and adjusted P-values
+
+```{r load LFC, eval=F}
+
+gtex_lfc <- combine_results(results_location = savedir,
+                            cohort = "GTEX",
+                            sample_group = "FP-patient",
+                            result_type = "log2FoldChange")
+
+gtex_pval <- combine_results(results_location = savedir,
+                            cohort = "GTEX",
+                            sample_group = "FP-patient",
+                            result_type = "padj")
+
+evo_lfc <- combine_results(results_location = savedir,
+                            cohort = "EVO",
+                            sample_group = "FP-patient",
+                            result_type = "log2FoldChange")
+
+evo_pval <- combine_results(results_location = savedir,
+                            cohort = "EVO",
+                            sample_group = "FP-patient",
+                            result_type = "padj")
+
+r2_lfc <- combine_results(results_location = savedir,
+                            cohort = "R2_atlas",
+                            sample_group = "FP-patient",
+                            result_type = "log2FoldChange")
+
+r2_pval <- combine_results(results_location = savedir,
+                            cohort = "R2_atlas",
+                            sample_group = "FP-patient",
+                            result_type = "padj")
+
+```
+
+```{r LFC}
+
+combined_rownames <- rownames(na.omit(gtex_lfc))[which(rownames(na.omit(gtex_lfc)) %in% rownames(na.omit(evo_lfc)) &
+                                                rownames(na.omit(gtex_lfc)) %in% rownames(na.omit(r2_lfc)))]
+
+mat_novel <- cbind(gtex_lfc[which(rownames(gtex_lfc) %in% combined_rownames),],
+                   evo_lfc[which(rownames(evo_lfc) %in% combined_rownames),],
+                   r2_lfc[which(rownames(r2_lfc) %in% combined_rownames),]
+                   )
+mat_canon_lfc <- mat_novel[which(grepl("ENSG",rownames(mat_novel))),]
+mat_novel_lfc <- mat_novel[which(grepl("MSTRG",rownames(mat_novel))),]
+
+write.table(mat_novel, file = paste(savedir,"RMS_FP-patient_genes_healthy_cohort_LFC_matrix.txt",sep = "/"), sep = ";", quote = F)
+
+```
+
+```{r P-val}
+
+mat_novel <- cbind(gtex_pval[which(rownames(gtex_pval) %in% combined_rownames),],
+                   evo_pval[which(rownames(evo_pval) %in% combined_rownames),],
+                   r2_pval[which(rownames(r2_pval) %in% combined_rownames),]
+                   )
+
+mat_novel[is.na(mat_novel)] <- 1
+
+write.table(mat_novel, file = paste(savedir,"RMS_FP-patient_genes_healthy_cohort_Pval_matrix.txt",sep = "/"), sep = ";", quote = F)
+
+mat_canon_pval <- mat_novel[which(grepl("ENSG",rownames(mat_novel))),]
+mat_novel_pval <- mat_novel[which(grepl("MSTRG",rownames(mat_novel))),]
+
+```
+
+## Novel gene filtering
+
+```{r novel RMS enrichment, eval=F}
+pass_lfc <- ifelse(apply(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),1,min) > 1 &
+                     rowMeans(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)])) > 3,T,F)
+pass_pval <- ifelse(rowMeans(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,39)])) < 0.001 &
+                     apply(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,39)]),1,max) < 0.001 ,T,F)
+
+pass_novel <- data.frame(gene_id = rownames(mat_novel_lfc),
+                         pass_lfc = pass_lfc,
+                         pass_pval = pass_pval,
+                         mean_lfc = rowMeans(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),
+                         min_lfc = apply(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)]), 1, min),
+                         max_pval = apply(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,39)]), 1, max),
+                         pass = ifelse(pass_lfc == T & pass_pval == T,T,F)
+                         )
+
+pass_novel <- pass_novel[
+  order( -pass_novel$mean_lfc ),
+]
+
+pass_novel <- dplyr::left_join(pass_novel, gtf_df[,c("gene_id","seqnames","start","end","strand","class_code")])
+pass_novel <- pass_novel[!(duplicated(pass_novel)),]
+
+write.table(pass_novel, file = paste(savedir,paste0("RMS_FP-patient_novel_enriched_matrix.txt"),sep = "/"), sep = ";", quote = F)
+
+```
+
+
+
+## Ref gene filtering
+
+```{r}
+
+canon_lfc <- ifelse(apply(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),1,min) > 1 &
+                     rowMeans(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,39)])) > 3,T,F)
+canon_pval <- ifelse(rowMeans(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,39)])) < 0.0001 &
+                     apply(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,39)]),1,max) < 0.0001 ,T,F)
+
+pass_canon <- data.frame(gene_id = rownames(mat_canon_lfc),
+                         pass_lfc = canon_lfc,
+                         pass_pval = canon_pval,
+                         mean_lfc = rowMeans(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,36)]),
+                         min_lfc = apply(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),1,min),
+                         max_pval = apply(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,39)]),1,max),
+                         pass = ifelse(canon_lfc == T & canon_pval == T,T,F),
+                         selected = ifelse(rownames(mat_canon_lfc) %in% selected_genes, T,F),
+                         domain = ifelse(rownames(mat_canon_lfc) %in% gene_metadata[which(gene_metadata$tm_domain ==
+                                                                                       "putative"),]$gene_id,
+                                         "putative",
+                                         ifelse(rownames(mat_canon_lfc) %in% 
+                                               gene_metadata[which(gene_metadata$tm_domain == "unspecific"),]$gene_id,"unspecific",ifelse(rownames(mat_canon_lfc) %in% 
+                                               gene_metadata[which(gene_metadata$tm_domain == "high_confidence"),]$gene_id,"high_confidence","unspecific"))))
+
+pass_canon <- dplyr::left_join(pass_canon, gene_name_id)
+
+pass_canon <- pass_canon[
+  order( -pass_canon$mean_lfc ),
+]
+
+tm_tumor_spec <- pass_canon[which(pass_canon$pass == T &
+                                  pass_canon$domain %in% c("putative","high_confidence")),]$gene_name
+
+
+write.table(pass_canon, file = paste(savedir,paste0("RMS_FP-patient_canon_enriched_matrix.txt"),sep = "/"), sep = ";", quote = F)
+
+```
+
+# Fusion Negative
+
+```{r}
+savedir = paste(savedir_base,"FN-patient", sep = "/")
+```
+
+## Output
+
+Load various group LFC and adjusted P-values
+
+```{r GTEx load LFC, eval=F}
+
+gtex_lfc <- combine_results(results_location = savedir,
+                            cohort = "GTEX",
+                            sample_group = "FP-patient",
+                            result_type = "log2FoldChange")
+
+gtex_pval <- combine_results(results_location = savedir,
+                            cohort = "GTEX",
+                            sample_group = "FP-patient",
+                            result_type = "padj")
+
+evo_lfc <- combine_results(results_location = savedir,
+                            cohort = "EVO",
+                            sample_group = "FP-patient",
+                            result_type = "log2FoldChange")
+
+evo_pval <- combine_results(results_location = savedir,
+                            cohort = "EVO",
+                            sample_group = "FP-patient",
+                            result_type = "padj")
+
+r2_lfc <- combine_results(results_location = savedir,
+                            cohort = "R2_atlas",
+                            sample_group = "FP-patient",
+                            result_type = "log2FoldChange")
+
+r2_pval <- combine_results(results_location = savedir,
+                            cohort = "R2_atlas",
+                            sample_group = "FP-patient",
+                            result_type = "padj")
+
+```
+
+```{r LFC}
+
+combined_rownames <- rownames(na.omit(gtex_lfc))[which(rownames(na.omit(gtex_lfc)) %in% rownames(na.omit(evo_lfc)) &
+                                                rownames(na.omit(gtex_lfc)) %in% rownames(na.omit(r2_lfc)))]
+
+mat_novel <- cbind(gtex_lfc[which(rownames(gtex_lfc) %in% combined_rownames),],
+                   evo_lfc[which(rownames(evo_lfc) %in% combined_rownames),],
+                   r2_lfc[which(rownames(r2_lfc) %in% combined_rownames),]
+                   )
+mat_canon_lfc <- mat_novel[which(grepl("ENSG",rownames(mat_novel))),]
+mat_novel_lfc <- mat_novel[which(grepl("MSTRG",rownames(mat_novel))),]
+
+write.table(mat_novel, file = paste(savedir,"RMS_FN-patient_genes_healthy_cohort_LFC_matrix.txt",sep = "/"), sep = ";", quote = F)
+
+```
+
+```{r P-val}
+
+mat_novel <- cbind(gtex_pval[which(rownames(gtex_pval) %in% combined_rownames),],
+                   evo_pval[which(rownames(evo_pval) %in% combined_rownames),],
+                   r2_pval[which(rownames(r2_pval) %in% combined_rownames),]
+                   )
+
+mat_novel[is.na(mat_novel)] <- 1
+
+write.table(mat_novel, file = paste(savedir,"RMS_FN-patient_genes_healthy_cohort_Pval_matrix.txt",sep = "/"), sep = ";", quote = F)
+
+mat_canon_pval <- mat_novel[which(grepl("ENSG",rownames(mat_novel))),]
+mat_novel_pval <- mat_novel[which(grepl("MSTRG",rownames(mat_novel))),]
+
+```
+
+## Novel gene filtering
+
+```{r novel RMS enrichment, eval=F}
+pass_lfc <- ifelse(apply(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),1,min) > 1 &
+                     rowMeans(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)])) > 3,T,F)
+pass_pval <- ifelse(rowMeans(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,39)])) < 0.001 &
+                     apply(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,39)]),1,max) < 0.001 ,T,F)
+
+pass_novel <- data.frame(gene_id = rownames(mat_novel_lfc),
+                         pass_lfc = pass_lfc,
+                         pass_pval = pass_pval,
+                         mean_lfc = rowMeans(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),
+                         min_lfc = apply(as.matrix(mat_novel_lfc[,c(1:13,15:22,24,26,28,30,32,39)]), 1, min),
+                         max_pval = apply(as.matrix(mat_novel_pval[,c(1:13,15:22,24,26,28,30,32,39)]), 1, max),
+                         pass = ifelse(pass_lfc == T & pass_pval == T,T,F)
+                         )
+
+pass_novel <- pass_novel[
+  order( -pass_novel$mean_lfc ),
+]
+
+pass_novel <- dplyr::left_join(pass_novel, gtf_df[,c("gene_id","seqnames","start","end","strand","class_code")])
+pass_novel <- pass_novel[!(duplicated(pass_novel)),]
+
+write.table(pass_novel, file = paste(savedir,paste0("RMS_FN-patient_novel_enriched_matrix.txt"),sep = "/"), sep = ";", quote = F)
+
+```
+
+## Ref gene filtering
+
+```{r}
+
+canon_lfc <- ifelse(apply(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),1,min) > 1 &
+                     rowMeans(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,39)])) > 3,T,F)
+canon_pval <- ifelse(rowMeans(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,39)])) < 0.0001 &
+                     apply(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,39)]),1,max) < 0.0001 ,T,F)
+
+pass_canon <- data.frame(gene_id = rownames(mat_canon_lfc),
+                         pass_lfc = canon_lfc,
+                         pass_pval = canon_pval,
+                         mean_lfc = rowMeans(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),
+                         min_lfc = apply(as.matrix(mat_canon_lfc[,c(1:13,15:22,24,26,28,30,32,39)]),1,min),
+                         max_pval = apply(as.matrix(mat_canon_pval[,c(1:13,15:22,24,26,28,30,32,39)]),1,max),
+                         pass = ifelse(canon_lfc == T & canon_pval == T,T,F),
+                         selected = ifelse(rownames(mat_canon_lfc) %in% selected_genes, T,F),
+                         domain = ifelse(rownames(mat_canon_lfc) %in% gene_metadata[which(gene_metadata$tm_domain ==
+                                                                                       "putative"),]$gene_id,
+                                         "putative",
+                                         ifelse(rownames(mat_canon_lfc) %in% 
+                                               gene_metadata[which(gene_metadata$tm_domain == "unspecific"),]$gene_id,"unspecific",ifelse(rownames(mat_canon_lfc) %in% 
+                                               gene_metadata[which(gene_metadata$tm_domain == "high_confidence"),]$gene_id,"high_confidence","unspecific"))))
+
+pass_canon <- dplyr::left_join(pass_canon, gene_name_id)
+
+pass_canon <- pass_canon[
+  order( -pass_canon$mean_lfc ),
+]
+
+tm_tumor_spec <- pass_canon[which(pass_canon$pass == T &
+                                  pass_canon$domain %in% c("putative","high_confidence")),]$gene_name
+
+
+write.table(pass_canon, file = paste(savedir,paste0("RMS_FN-patient_canon_enriched_matrix.txt"),sep = "/"), sep = ";", quote = F)
+
+```
