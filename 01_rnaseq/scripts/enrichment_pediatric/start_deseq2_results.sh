@@ -38,4 +38,4 @@ chmod +x ${workdir}/rsession.sh
 export APPTAINER_BIND="${workdir}/run:/run,${workdir}/tmp:/tmp,${workdir}/database.conf:/etc/rstudio/database.conf,${workdir}/rsession.sh:/etc/rstudio/rsession.sh,${workdir}/var/lib/rstudio-server:/var/lib/rstudio-server,/hpc/pmc_vanheesch,/hpc/local/Rocky8/pmc_vanheesch/Rstudio_Server_Libs/Rstudio_${version}_libs:/usr/local/lib/R/site-library"
 
 apptainer exec --cleanenv ${singularity_dir}/rstudio_${version}_bioconductor.sif \
-  Rscript /hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/scripts/quantification/create_deseq2_results.R \
+  Rscript /hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq/scripts/enrichment_pediatric/create_deseq2_results.R
