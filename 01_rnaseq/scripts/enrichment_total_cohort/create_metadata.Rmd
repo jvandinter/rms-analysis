@@ -1,0 +1,192 @@
+---
+title: "RMS RNA-seq metadata"
+author: "JD"
+date: "2024-05-07"
+output: html_document
+---
+
+```{r library}
+
+library(dplyr)
+library(magrittr)
+
+```
+
+```{r parameters}
+
+base_dir <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+
+rna_dir <- paste(base_dir,"01_rnaseq", sep = "/")
+
+analysis_dir <- paste(rna_dir,"analysis","quantification_all_cohorts","salmon_quant", sep = "/")
+
+documentation_dir <- paste(rna_dir,"documentation","all_cohorts", sep = "/")
+maxima_dir <- "/hpc/pmc_vanheesch/data/maxima/rnaseq"
+
+```
+
+# Non-tumor
+
+```{r load files & prepared metas}
+
+# Samples to consider
+quant_files <- basename(dirname(list.files(path = analysis_dir,
+                                           pattern = "quant.sf",
+                                           recursive = T)))
+
+tidy_quant_meta <- read.delim(paste(documentation_dir, "tidy_rms_quant_meta.txt", sep = "/"), sep = " ")
+
+meta_gtex <- tidy_quant_meta %>%
+  dplyr::filter(cohort == "GTEX")
+meta_r2 <- tidy_quant_meta %>%
+  dplyr::filter(cohort == "R2_atlas")
+meta_evo <- tidy_quant_meta %>%
+  dplyr::filter(cohort %in% c("EVO-DEVO-postbirth","EVO-DEVO-fetal")) %>%
+  dplyr::mutate(type = dplyr::case_when(grepl("postbirth",cohort) ~ paste(type,"postbirth", sep = "-"),
+                                        grepl("fetal",cohort) ~ paste(type,"fetal", sep = "-"),
+                                        TRUE ~ type))
+
+```
+
+# PMC
+
+```{r fix PMC}
+
+dq_subject <- read.delim(paste(maxima_dir,"20240507_DQ_subject.csv", sep = "/"),
+                         sep = ",")
+dq_diagnosis <- read.delim(paste(maxima_dir,"20240507_DQ_diagnosis.csv", sep = "/"),
+                         sep = ",")
+dq_biosource <- read.delim(paste(maxima_dir,"20240507_DQ_biosource.csv", sep = "/"),
+                         sep = ",")
+dq_biomaterial <- read.delim(paste(maxima_dir,"20240507_DQ_biomaterial.csv", sep = "/"),
+                         sep = ",")
+
+pmc_meta <- dq_biomaterial %>%
+  dplyr::select(Biomaterial.ID,
+                Library.strategy,
+                Linked.biosource,
+                Linked.subject) %>%
+  dplyr::filter(Biomaterial.ID %in% quant_files) %>%
+  dplyr::rename(Biosource.ID = Linked.biosource,
+                Individual.ID = Linked.subject) %>%
+  dplyr::left_join(dq_biosource %>% dplyr::select(Tissue,
+                                                  Biosource.date,
+                                                  Linked.diagnosis,
+                                                  Disease.status,
+                                                  Biosource.ID)) %>%
+  dplyr::rename(Diagnosis.ID = Linked.diagnosis) %>%
+  dplyr::left_join(dq_subject %>% dplyr::select(Individual.ID,
+                                                Date.of.death,
+                                                Sex,
+                                                Tumor.stage,
+                                                Tumor.type.label,
+                                                Topography.label)) %>%
+  dplyr::left_join(dq_diagnosis %>% dplyr::select(Diagnosis.ID,
+                                                  Age.at.diagnosis,
+                                                  Diagnosis.date,
+                                                  Treatment,
+                                                  Disease.Synonyms))
+
+write.table(pmc_meta, file = paste(documentation_dir,"pmc_pediatric_full.csv", sep = "/"),
+            sep = ",", quote = F, row.names = F)
+
+# sample_id type cohort sex batch
+# AML WT ATRT B-ALL OS RMS T-ALL WT EPN EWS MBL NBL
+
+meta_pmc <- pmc_meta %>%
+  dplyr::mutate(Tumor.type.label = tolower(Tumor.type.label),
+                batch = "PMC",
+                cohort = dplyr::case_when(grepl("ependymoma",Tumor.type.label)~ "EPN",
+                                          grepl("acute",Tumor.type.label) ~ "AML",
+                                          grepl("nephro",Tumor.type.label)~ "WT",
+                                          grepl("medulloblastoma",Tumor.type.label)~ "MBL",
+                                          grepl("neuroblastoma",Tumor.type.label)~ "NBL",
+                                          grepl("rhabdomyosarcoma",Tumor.type.label)~ "RMS",
+                                          grepl("osteosarcoma",Tumor.type.label)~ "OS",
+                                          grepl("ewing",Tumor.type.label)~ "EWS",
+                                          grepl("rhabdoid",Tumor.type.label)~ "ATRT",
+                                          TRUE ~ "tumor"),
+                type = dplyr::case_when(grepl("alveolar",Tumor.type.label) ~ "FP-RMS",
+                                        grepl("embryonal",Tumor.type.label) ~ "FN-RMS",
+                                        grepl("spindle",Tumor.type.label) ~ "FN-RMS",
+                                        TRUE ~ cohort)) %>%
+  dplyr::select(Biomaterial.ID,Sex,type,batch,cohort) %>%
+  dplyr::rename(sample_id = Biomaterial.ID, 
+                sex = Sex)
+
+```
+
+# SJ
+
+```{r fix SJ}
+sj_new <- read.delim("/hpc/pmc_vanheesch/data/external/rnaseq/20220527_StJudeCloud/metadata/SAMPLE_INFO.tsv", sep = "\t") %>%
+  dplyr::filter(grepl(".bam$",file_path)) %>%
+  dplyr::mutate(sample_name = gsub("_","-",sample_name)) %>%
+  dplyr::filter(sequencing_type == "RNA-Seq")
+
+# Check if some files are still salvageable
+to_fix <- data.frame(file_name = quant_files[!(quant_files %in% sj_new$sample_name) & grepl("^SJ",quant_files)]) %>%
+  dplyr::mutate(sample_name = dplyr::case_when(grepl("-NA",file_name) ~ gsub("-NA","",file_name),
+                                               grepl("-Total",file_name) ~ gsub("-Total","",file_name),
+                                               TRUE ~ gsub(".$", "",file_name))) %>%
+  dplyr::filter(sample_name %in% sj_new$sample_name) %>%
+  dplyr::left_join(sj_new, by = "sample_name") %>%
+  dplyr::distinct(file_name, .keep_all = T) %>%
+  dplyr::mutate(sample_name = file_name) %>%
+  dplyr::select(-file_name)
+
+# sample_id type cohort sex batch
+# AML WT ATRT B-ALL OS RMS T-ALL WT EPN EWS MBL NBL
+
+meta_sj <- sj_new %>%
+  dplyr::filter(sample_name %in% quant_files) %>%
+  rbind(.,to_fix) %>%
+  dplyr::mutate(attr_sex = tolower(attr_sex),
+                sj_long_disease_name = tolower(sj_long_disease_name),
+                batch = "SJ",
+                cohort = dplyr::case_when(grepl("medulloblastoma",sj_long_disease_name) ~ "MBL",
+                                        grepl("wilms|renal",sj_long_disease_name) ~ "WT",
+                                        grepl("b-cell",sj_long_disease_name) ~ "B-ALL",
+                                        grepl("t-cell",sj_long_disease_name) ~ "T-ALL",
+                                        grepl("ependymoma",sj_long_disease_name) ~ "EPN",
+                                        grepl("acute",sj_long_disease_name) ~ "AML",
+                                        grepl("osteosarcoma",sj_long_disease_name) ~ "OS",
+                                        grepl("^SJOS",sample_name) ~ "OS",
+                                        grepl("neuroblastoma",sj_long_disease_name) ~ "NBL",
+                                        grepl("rhabdomyosarcoma",sj_long_disease_name) ~ "RMS",
+                                        grepl("ewing",sj_long_disease_name) ~ "EWS",
+                                        grepl("rhabdoid",sj_long_disease_name) ~ "ATRT",
+                                        TRUE ~ "tumor"
+                                        ),
+                type = dplyr::case_when(grepl("alveolar",sj_long_disease_name) ~ "FP-RMS",
+                                        grepl("embryonal",sj_long_disease_name) ~ "FN-RMS",
+                                        grepl("rhabdomyosarcoma",sj_long_disease_name) ~ "FN-RMS",
+                                        TRUE ~ cohort)) %>%
+  dplyr::select(sample_name,batch, cohort, type, attr_sex) %>%
+  dplyr::rename(sample_id = sample_name,
+                sex = attr_sex) %>%
+  dplyr::distinct()
+
+```
+
+# Combination
+
+```{r combination}
+meta_combined <- rbind(meta_evo,meta_gtex,meta_r2,meta_pmc,meta_sj)
+
+write.table(meta_combined, file = paste(documentation_dir,"rms_meta_all_combined.csv", sep = "/"),
+            sep = ",", quote = F, row.names = T)
+
+rownames(meta_combined) <- meta_combined$sample_id
+
+nrow(meta_combined)
+length(quant_files)
+
+table(quant_files %in% meta_combined$sample_id)
+
+# For Disqover
+not_in_meta <- data.frame(sample_id = quant_files[!(quant_files %in% meta_combined$sample_id)]) %>%
+  dplyr::filter(grepl("^PM",sample_id))
+
+
+```
