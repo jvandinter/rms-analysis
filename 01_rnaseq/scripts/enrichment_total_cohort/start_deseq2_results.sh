@@ -3,13 +3,13 @@
 #SBATCH --job-name deseq2_results
 #SBATCH --gres=tmpspace:20G
 #SBATCH --mem=120G
-#SBATCH --array=1-3%3
+#SBATCH --array=1-9%9
 #SBATCH --time=24:00:00
 
 version="4.3.0"
 
-tumor_types=(FP FN RMS)
-tumor_type=${tumor_types[[]]}
+tumor_types=(FP-RMS FP-RMS FP-RMS FN-RMS FN-RMS FN-RMS RMS RMS RMS)
+tumor_type=${tumor_types[$((SLURM_ARRAY_TASK_ID-1))]}
 
 # Create temporary directory to be populated with directories to bind-mount in the container
 # where writable file systems are necessary. Adjust path as appropriate for your computing environment.
@@ -42,4 +42,6 @@ chmod +x ${workdir}/rsession.sh
 export APPTAINER_BIND="${workdir}/run:/run,${workdir}/tmp:/tmp,${workdir}/database.conf:/etc/rstudio/database.conf,${workdir}/rsession.sh:/etc/rstudio/rsession.sh,${workdir}/var/lib/rstudio-server:/var/lib/rstudio-server,/hpc/pmc_vanheesch,/hpc/local/Rocky8/pmc_vanheesch/Rstudio_Server_Libs/Rstudio_${version}_libs:/usr/local/lib/R/site-library"
 
 apptainer exec --cleanenv ${singularity_dir}/rstudio_${version}_bioconductor.sif \
-  Rscript /hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq/scripts/enrichment_pediatric/create_deseq2_results.R
+  Rscript /hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq/scripts/enrichment_total_cohort/create_deseq2_results.R \
+  ${tumor_type} \
+  ${SLURM_ARRAY_TASK_ID}

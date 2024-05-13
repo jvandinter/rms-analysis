@@ -26,11 +26,11 @@ print(paste(Sys.time(),"Finding salmon quant files ..."))
 # Load count files
 count_files <- list.files(paste(rna_dir,
                                 "analysis/quantification/salmon_quant",
-                                tumor_type), 
+                                sep = "/"), 
                           recursive = T, 
                           pattern = "quant.sf", 
                           full.names = T)
-names(count_files) <- basename(base_dir(count_files))
+names(count_files) <- basename(dirname(count_files))
 count_files <- count_files[which(names(count_files) %in% meta_cohort$sample_id)]
 
 print(paste(Sys.time(),"Loading salmon quant files ..."))
