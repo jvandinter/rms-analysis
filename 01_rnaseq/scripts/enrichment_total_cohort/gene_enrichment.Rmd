@@ -1,0 +1,420 @@
+---
+title: "RMS gene enrichment"
+author: "JD"
+date: "2023-11-09"
+output: html_document
+---
+
+```{r library}
+library(magrittr)
+library(dplyr)
+library(DESeq2)
+```
+
+
+```{r parameters}
+
+base_dir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+rna_dir = paste(base_dir,"01_rnaseq" , sep = "/")
+save_dir_base = paste(rna_dir,"results","quantification",sep = "/")
+
+
+```
+
+
+# Gene selection
+
+```{r novel}
+
+gtf_df <- rtracklayer::import.gff(paste(rna_dir,"analysis/rnaseq_pipeline/customannotation",
+                                        "RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")) %>%
+  as.data.frame()
+
+novel_genes <- gtf_df %>% 
+  dplyr::filter(grepl("MSTRG",gene_id)) %>%
+  dplyr::pull(gene_id) %>%
+  unique(.)
+
+```
+
+```{r annotated}
+
+polya_feats <- read.delim("/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/gencode.v36.metadata.PolyA_feature", header = F)
+
+canon_gtf <- rtracklayer::import.gff("/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/Homo_sapiens.GRCh38.102.gtf")
+canon_df <- as.data.frame(canon_gtf) %>%
+  subset(type == "transcript")
+
+canon_gencode_table <- data.frame(gene_id = canon_df$gene_id,
+                                  gencode_id = paste(canon_df$transcript_id,canon_df$transcript_version,sep="."))
+canon_gencode_table <- canon_gencode_table[!duplicated(canon_gencode_table),]
+
+polya_feats <- dplyr::left_join(polya_feats,canon_gencode_table, by = c("V1" = "gencode_id"))
+
+t <- as.data.frame(table(canon_gtf[which(canon_gtf$type == "exon"),]$transcript_id))
+colnames(t) <- c("transcript_id",
+                "exon_count")
+
+# Each transcript has a transcript row and exon row
+gtf_count <- dplyr::left_join(as.data.frame(canon_gtf),
+                              t,
+                              by = "transcript_id")
+
+mono_transcripts <- subset(gtf_count,
+                           exon_count < 2)[,c("gene_id","transcript_id","transcript_version")]
+
+mono_transcripts$gencode <- paste(mono_transcripts$transcript_id,mono_transcripts$transcript_version,sep=".")
+mono_transcripts <- mono_transcripts[!duplicated(mono_transcripts),]
+
+selected_genes <- unique(canon_df[which(canon_df$gene_id %in% polya_feats$gene_id &
+                                   !(canon_df$gene_id %in% mono_transcripts$gene_id)),]$gene_id)
+
+```
+
+#Surfaceome & Metagene
+
+```{r}
+
+# Surfaceome
+surface_xl <- readxl::read_xlsx("/hpc/pmc_vanheesch/projects/jvandinter/custom_transcriptomes/20221014_JD_T_ALL/analysis/surfaceome_expression/pone.0121314.s003.xlsx")
+surface_xl$`UniProt Cell surface` <- ifelse(is.na(surface_xl$`UniProt Cell surface`) ,F,T)
+
+gene_name_id <- gtf_df %>%
+  dplyr::filter(type == "transcript") %>% 
+  dplyr::select(gene_name,gene_id,gene_biotype) %>% 
+  dplyr::distinct()
+
+gene_metadata <- dplyr::left_join(gene_name_id, 
+                                 surface_xl, 
+                                 by = c("gene_name" = "ENTREZ gene symbol")) %>%
+  dplyr::mutate(tm_domain = ifelse(grepl("1",`CSPA category`),
+                                  "high_confidence",
+                                  ifelse(
+                                    grepl("2",`CSPA category`),
+                                    "putative",
+                                    "unspecific"))) %>%
+  dplyr::select(gene_name,gene_id,gene_biotype,tm_domain)
+
+```
+
+# Functions
+
+```{r functions}
+combine_results <- function(results_location, 
+                            sample_group,
+                            result_type) {
+  
+  res_loc = list.files(results_location, full.names = T)
+  
+  l = lapply(res_loc, function(x) {
+    df = read.table(file = x, sep = " ")
+    df = as.data.frame(df[,c(result_type)])
+    colnames(df) = gsub(".txt","",
+                        gsub(".*vs_","",basename(x)))
+    return(df)
+  })
+  
+  results_df <- do.call(cbind,l)
+  rownames(results_df) <- rownames(read.table(res_loc[[1]]))
+  
+  return(results_df)
+}
+
+create_enrichment_table <- function(combined_results_lfc, # LFC (column) per comparison for each gene (rows)
+                              combined_results_pval, # LFC (row) per comparison for each gene (rows)
+                              pval_novel_cutoff = 0.001, # P-adjusted cut-off for novel genes
+                              pval_anno_cutoff = 0.0001, # P-adjusted for annotated genes
+                              lfc_cutoff = 1, # LFC cut-off to consider as minimum significant
+                              lfc_mean_cutoff = 3, # mean of all LFCs cut-off
+                              non_tumor_columns, # column indices or vector of column names for enrichment
+                              tumor_columns) { # column indices or vector of column names for specificity
+
+  # Log2foldchange
+  lfc = as.matrix(combined_results_lfc)
+  lfc_novel = lfc[grepl("MSTRG",rownames(lfc)),]
+  lfc_anno = lfc[grepl("ENSG",rownames(lfc)),]
+  
+  # Adjusted P-value
+  pval = as.matrix(combined_results_pval)
+  pval_novel = pval[grepl("MSTRG",rownames(pval)),]
+  pval_anno = pval[grepl("ENSG",rownames(pval)),]
+  
+  # Non tumor comparison
+  enriched_lfc = ifelse(
+    apply(lfc[,non_tumor_columns],1,min) > lfc_cutoff &
+    rowMeans(lfc[,non_tumor_columns]) > lfc_mean_cutoff,
+    TRUE,FALSE)
+  
+  enriched_pval_novel = ifelse(
+    apply(pval_novel[,non_tumor_columns],1,max) < pval_novel_cutoff &
+    rowMeans(pval_novel[,non_tumor_columns]) < pval_novel_cutoff,
+    TRUE,FALSE)
+  
+  enriched_pval_anno = ifelse(
+    apply(pval_anno[,non_tumor_columns],1,max) < pval_anno_cutoff &
+    rowMeans(pval_anno[,non_tumor_columns]) < pval_anno_cutoff,
+    TRUE,FALSE)
+  
+  enriched_pval = rbind(data.frame(gene_id = rownames(pval_novel),
+                                   enriched_pval = enriched_pval_novel),
+                        data.frame(gene_id = rownames(pval_anno),
+                                   enriched_pval = enriched_pval_anno))
+    
+  # Non-tumor + other pediatric tumors comparison
+  specific_lfc = ifelse(
+    apply(lfc[,non_tumor_columns],1,min) > lfc_cutoff &
+    apply(lfc[,tumor_columns],1,min) > lfc_cutoff &
+    rowMeans(lfc[,non_tumor_columns]) > lfc_mean_cutoff,
+    TRUE,FALSE)
+    
+  specific_pval_novel = ifelse(
+    apply(pval_novel[,non_tumor_columns],1,max) < pval_novel_cutoff &
+    apply(pval_novel[,tumor_columns],1,max) < pval_novel_cutoff &
+    rowMeans(pval_novel[,non_tumor_columns]) < pval_novel_cutoff,
+    TRUE,FALSE)
+  
+  specific_pval_anno = ifelse(
+    apply(pval_anno[,non_tumor_columns],1,max) < pval_anno_cutoff &
+    apply(pval_anno[,tumor_columns],1,max) < pval_anno_cutoff &
+    rowMeans(pval_anno[,non_tumor_columns]) < pval_anno_cutoff,
+    TRUE,FALSE)
+  
+  specific_pval = rbind(data.frame(gene_id = rownames(pval_novel),
+                                   specific_pval = specific_pval_novel),
+                        data.frame(gene_id = rownames(pval_anno),
+                                   specific_pval = specific_pval_anno))
+  
+  # Calculate how many significant samples per group
+  non_tumor_count_novel = rowSums(lfc_novel[,non_tumor_columns] > lfc_cutoff & 
+                          pval_novel[,non_tumor_columns] < pval_novel_cutoff)
+  non_tumor_count_anno = rowSums(lfc_anno[,non_tumor_columns] > lfc_cutoff & 
+                          pval_anno[,non_tumor_columns] < pval_anno_cutoff)
+  
+  non_tumor_sig_count = data.frame(gene_id = c(names(non_tumor_count_novel),
+                                               names(non_tumor_count_anno)),
+                               non_tumor_sig = c(non_tumor_count_novel,
+                                                 non_tumor_count_anno))
+  
+  tumor_count_novel = rowSums(lfc_novel[,tumor_columns] > lfc_cutoff & 
+                          pval_novel[,tumor_columns] < pval_novel_cutoff)
+  tumor_count_anno = rowSums(lfc_anno[,tumor_columns] > lfc_cutoff & 
+                          pval_anno[,tumor_columns] < pval_anno_cutoff)
+  
+  tumor_sig_count = data.frame(gene_id = c(names(tumor_count_novel),
+                                           names(tumor_count_anno)),
+                               tumor_sig = c(tumor_count_novel,
+                                             tumor_count_anno))
+  
+  df = data.frame(gene_id = rownames(lfc),
+                  enriched_lfc = enriched_lfc,
+                  specific_lfc = specific_lfc) %>%
+    dplyr::left_join(enriched_pval, by = "gene_id") %>%
+    dplyr::left_join(specific_pval, by = "gene_id") %>%
+    dplyr::mutate(enriched = ifelse(enriched_lfc == T & enriched_pval == T, T, F),
+                  specific = ifelse(specific_lfc == T & specific_pval == T, T, F)) %>%
+    dplyr::select(gene_id,enriched,specific) %>%
+    dplyr::left_join(non_tumor_sig_count, by = "gene_id") %>%
+    dplyr::left_join(tumor_sig_count, by = "gene_id") %>%
+    dplyr::mutate(tumor_lfc = rowMeans(lfc[,tumor_columns]),
+                  normal_lfc = rowMeans(lfc[,non_tumor_columns]),
+                  exclusion_lfc = rowMeans(lfc[,-c(tumor_columns,non_tumor_columns)]))
+  
+  return(df)
+}
+```
+
+# Output
+
+```{r result parsing}
+fp_lfc <- combine_results(results_location = paste(save_dir_base,"FP-RMS", sep = "/"),
+                          sample_group = "FP-RMS",
+                          result_type = "log2FoldChange")
+
+fn_lfc <- combine_results(results_location = paste(save_dir_base,"FN-RMS", sep = "/"),
+                          sample_group = "FN-RMS",
+                          result_type = "log2FoldChange")
+
+rms_lfc <- combine_results(results_location = paste(save_dir_base,"RMS", sep = "/"),
+                          sample_group = "RMS",
+                          result_type = "log2FoldChange")
+
+fp_pval <- combine_results(results_location = paste(save_dir_base,"FP-RMS", sep = "/"),
+                          sample_group = "FP-RMS",
+                          result_type = "padj")
+
+fn_pval <- combine_results(results_location = paste(save_dir_base,"FN-RMS", sep = "/"),
+                          sample_group = "FN-RMS",
+                          result_type = "padj")
+
+rms_pval <- combine_results(results_location = paste(save_dir_base,"RMS", sep = "/"),
+                          sample_group = "RMS",
+                          result_type = "padj")
+```
+
+non-tumor exclusions:
+c(12,20,22,25,27,30,39,51,52)
+
+non-tumor samples:
+c(1:2,6:10,13:15,17,19,21,23,24,26,28,29,31:33,35,37,40:48,53:56)
+
+tumor samples:
+c(3,4,5,16,18,34,36,38,49,57)
+
+```{r table generation}
+non_tumor_index = c(1:2,6:10,13:15,17,19,21,23,24,26,28,29,31:33,35,37,40:48,53:56)
+tumor_index = c(3,4,5,16,18,34,36,38,49,57)
+
+fp_table <- create_enrichment_table(combined_results_lfc = fp_lfc,
+                                    combined_results_pval = fp_pval,
+                                    non_tumor_columns = non_tumor_index,
+                                    tumor_columns = tumor_index) %>%
+  dplyr::left_join(gene_metadata, by = "gene_id") %>%
+  dplyr::mutate(selected = ifelse(gene_id %in% c(selected_genes, novel_genes),T,F)) %>%
+  dplyr::left_join(gtf_df %>% 
+                     dplyr::filter(type == "gene") %>%
+                     dplyr::select(gene_id,seqnames,start,end,strand), by = "gene_id") %>%
+  dplyr::left_join(gtf_df %>%
+                     dplyr::filter(type == "transcript" & grepl("MSTRG",gene_id)) %>%
+                     dplyr::select(gene_id,class_code), by = "gene_id") %>%
+  dplyr::distinct()
+
+fn_table <- create_enrichment_table(combined_results_lfc = fn_lfc,
+                                    combined_results_pval = fn_pval,
+                                    non_tumor_columns = non_tumor_index,
+                                    tumor_columns = tumor_index) %>%
+  dplyr::left_join(gene_metadata, by = "gene_id") %>%
+  dplyr::mutate(selected = ifelse(gene_id %in% c(selected_genes, novel_genes),T,F)) %>%
+  dplyr::left_join(gtf_df %>% 
+                     dplyr::filter(type == "gene") %>%
+                     dplyr::select(gene_id,seqnames,start,end,strand), by = "gene_id") %>%
+  dplyr::left_join(gtf_df %>%
+                     dplyr::filter(type == "transcript" & grepl("MSTRG",gene_id)) %>%
+                     dplyr::select(gene_id,class_code), by = "gene_id") %>%
+  dplyr::distinct()
+
+rms_table <- create_enrichment_table(combined_results_lfc = rms_lfc,
+                                    combined_results_pval = rms_pval,
+                                    non_tumor_columns = non_tumor_index,
+                                    tumor_columns = tumor_index) %>%
+  dplyr::left_join(gene_metadata, by = "gene_id") %>%
+  dplyr::mutate(selected = ifelse(gene_id %in% c(selected_genes, novel_genes),T,F)) %>%
+  dplyr::left_join(gtf_df %>% 
+                     dplyr::filter(type == "gene") %>%
+                     dplyr::select(gene_id,seqnames,start,end,strand), by = "gene_id") %>%
+  dplyr::left_join(gtf_df %>%
+                     dplyr::filter(type == "transcript" & grepl("MSTRG",gene_id)) %>%
+                     dplyr::select(gene_id,class_code), by = "gene_id") %>%
+  dplyr::distinct()
+
+write.table(fp_table, file = paste(rna_dir,"results/quantification","RMS-FP_enrichment.csv",sep ="/"), 
+            sep = ",", quote = F, row.names = F)
+write.table(fn_table, file = paste(rna_dir,"results/quantification","RMS-FN_enrichment.csv",sep ="/"), 
+            sep = ",", quote = F, row.names = F)
+write.table(rms_table, file = paste(rna_dir,"results/quantification","RMS_enrichment.csv",sep ="/"), 
+            sep = ",", quote = F, row.names = F)
+
+```
+
+```{r}
+
+# RMS - FP
+rms_fp_genes_enr = fp_table %>% 
+  dplyr::filter(enriched == T) %>% 
+  dplyr::pull(gene_id)
+rms_fp_genes_spec = fp_table %>% 
+  dplyr::filter(specific == T) %>% 
+  dplyr::pull(gene_id)
+
+# RMS - FN
+rms_fn_genes_enr = fn_table %>% 
+  dplyr::filter(enriched == T) %>% 
+  dplyr::pull(gene_id)
+rms_fn_genes_spec = fn_table %>% 
+  dplyr::filter(specific == T) %>% 
+  dplyr::pull(gene_id)
+
+# RMS - entire cohort
+rms_genes_enr = rms_table %>% 
+  dplyr::filter(enriched == T) %>% 
+  dplyr::pull(gene_id)
+rms_genes_spec = rms_table %>% 
+  dplyr::filter(specific == T) %>% 
+  dplyr::pull(gene_id)
+
+```
+
+```{r upset plot}
+
+lt_enr = list(fp_enriched = rms_fp_genes_enr,
+          fn_enriched = rms_fn_genes_enr,
+          rms_all_enriched =rms_genes_enr)
+
+lt_spec = list(fp_specific = rms_fp_genes_spec,
+          fn_specific = rms_fn_genes_spec,
+          rms_all_specific = rms_genes_spec)
+
+lt_check = list(fp_specific =rms_fp_genes_spec,
+                fn_enriched = rms_fn_genes_enr,
+          rms_all_enriched =rms_genes_enr)
+
+m = ComplexHeatmap::make_comb_mat(lt_spec, mode = "distinct")
+ComplexHeatmap::UpSet(m,
+    top_annotation = ComplexHeatmap::upset_top_annotation(m, add_numbers = TRUE),
+    right_annotation = ComplexHeatmap::upset_right_annotation(m, add_numbers = TRUE))
+
+```
+
+```{r reannotate}
+
+enriched_genes = data.frame(gene_id = fp_table$gene_id) %>%
+  dplyr::mutate(group_enriched = dplyr::case_when(gene_id %in% rms_fp_genes_enr &
+                                                  !(gene_id %in% rms_fn_genes_enr) ~ "FP-RMS",
+                                                  gene_id %in% rms_fn_genes_enr &
+                                                  !(gene_id %in% rms_fp_genes_enr) ~ "FN-RMS",
+                                                  gene_id %in% rms_fn_genes_enr &
+                                                  gene_id %in% rms_fp_genes_enr ~ "both",
+                                                  gene_id %in% rms_genes_enr &
+                                                    !(gene_id %in% rms_fp_genes_enr) &
+                                                    !(gene_id %in% rms_fn_genes_enr) ~ "weak",
+                                                  TRUE ~ "not_significant"),
+                group_specific = dplyr::case_when(gene_id %in% rms_fp_genes_spec &
+                                                  !(gene_id %in% rms_fn_genes_spec) ~ "FP-RMS",
+                                                  gene_id %in% rms_fn_genes_spec &
+                                                  !(gene_id %in% rms_fp_genes_spec) ~ "FN-RMS",
+                                                  gene_id %in% rms_fn_genes_spec &
+                                                  gene_id %in% rms_fp_genes_spec ~ "both",
+                                                  gene_id %in% rms_genes_spec &
+                                                    !(gene_id %in% rms_fp_genes_spec) &
+                                                    !(gene_id %in% rms_fn_genes_spec) ~ "weak",
+                                                  TRUE ~ "not_significant")
+                )
+
+global_overview_table <- fp_table %>% 
+  dplyr::select(-c("enriched","specific","non_tumor_sig",
+                   "tumor_sig","tumor_lfc","normal_lfc","exclusion_lfc")) %>%
+  dplyr::left_join(enriched_genes, by = "gene_id")
+
+write.table(global_overview_table,
+            file = paste(rna_dir,"results/quantification",
+                         "rms_rnaseq_overview_table.csv", sep = "/"),
+            sep = "," , quote = F, row.names = F)
+
+```
+
+```{r}
+
+table(global_overview_table %>% 
+        dplyr::filter(gene_biotype %in% c("protein_coding",
+                                          "lncRNA",
+                                          "stringtie") &
+                        selected == T) %>%
+        dplyr::select(gene_biotype,group_enriched))
+
+table(global_overview_table %>% 
+        dplyr::filter(gene_biotype %in% c("protein_coding",
+                                          "lncRNA",
+                                          "stringtie") &
+                        selected == T) %>%
+        dplyr::select(gene_biotype,group_specific))
+
+```
