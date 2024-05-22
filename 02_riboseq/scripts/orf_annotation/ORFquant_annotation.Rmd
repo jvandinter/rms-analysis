@@ -1,0 +1,373 @@
+---
+title: "RMS ORFquant annotation"
+author: "JD"
+date: "2024-04-19"
+output: html_document
+---
+
+```{r setup, include = F}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(rtracklayer)
+  library(biomaRt)
+  library(Biostrings)
+  library(parallel)
+})
+```
+
+## Data loading
+
+```{r}
+basedir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+
+rna_dir = paste(basedir,
+                "01_rnaseq",sep="/")
+ribo_dir = paste(basedir,
+                 "02_riboseq", sep = "/")
+savedir = paste(ribo_dir,
+                "results/figures",sep="/")
+metadata_dir = paste(basedir,
+                     "documentation",sep="/")
+txome_gtf = paste(rna_dir,
+                  "analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.sorted.gtf")
+txdb_loc <- paste0(rna_dir,"/analysis/rnaseq_pipeline/customannotation/",
+                   "RMS_container/",
+                   "RMS_full_novel_filtered_corrected.gtf_TxDb")
+
+mat_cutoff_summary <- read.delim(paste(ribo_dir,"analysis/orf_quantification/ORF_sample_sharing_summary.csv",sep = "/"), sep = ",",
+                                 row.names = 1)
+
+```
+
+```{r load ORFquant ORFs}
+orfquant_results_location <- paste(ribo_dir,
+                                   "analysis/ORFquant/RMS_merged_psites",
+                                   "RMS_merged_psites_final_ORFquant_results",sep="/")
+
+# Load ORF definitions
+rms_orfquant_orfs <- get(load(orfquant_results_location))
+orfs_tx <- rms_orfquant_orfs$ORFs_tx
+orfs_tx_df <-  data.frame(mcols(orfs_tx)[, c("ORF_id_tr", "Protein", "gene_id", "gene_biotype", "gene_name", "transcript_id", "transcript_biotype", "ORF_category_Tx", "ORF_category_Gen", "P_sites_raw", "P_sites_raw_uniq")]) %>%
+  distinct()
+```
+
+## RMS enrichment
+
+```{r load RMS enrichment}
+rms_gtf <- as.data.frame(rtracklayer::import.gff(paste(rna_dir,"analysis","rnaseq_pipeline","customannotation","RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")))
+
+protein_coding <- unique(rms_gtf[which(rms_gtf$gene_biotype == "protein_coding"),]$gene_id)
+lnc_rna <-unique(rms_gtf[which(rms_gtf$gene_biotype == "lncRNA"),]$gene_id)
+
+fp_pass_novel <- read.delim(paste(rna_dir,"results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fp_pass_canon <- read.delim(paste(rna_dir,"results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fn_pass_novel <- read.delim(paste(rna_dir,"results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fn_pass_canon <- read.delim(paste(rna_dir,"results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_novel <- read.delim(paste(rna_dir,"results","quantification","old",
+                                  paste0("RMS_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_canon <- read.delim(paste(rna_dir,"results","quantification","old",
+                                  paste0("RMS_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+venn_lnc <- list(FP_RMS = fp_pass_canon[which(fp_pass_canon$pass == T & 
+                                                fp_pass_canon$selected == T &
+                                                fp_pass_canon$gene_id %in% lnc_rna),]$gene_id,
+                 FN_RMS = fn_pass_canon[which(fn_pass_canon$pass == T & 
+                                                fn_pass_canon$selected == T &
+                                                fn_pass_canon$gene_id %in% lnc_rna),]$gene_id,
+                 all_RMS = combined_pass_canon[which(combined_pass_canon$pass == T &
+                                                            combined_pass_canon$selected == T &
+                                                            combined_pass_canon$gene_id %in% lnc_rna),]$gene_id)
+
+venn_pc <- list(FP_RMS = fp_pass_canon[which(fp_pass_canon$pass == T & 
+                                                fp_pass_canon$selected == T &
+                                                fp_pass_canon$gene_id %in% protein_coding),]$gene_id,
+                 FN_RMS = fn_pass_canon[which(fn_pass_canon$pass == T & 
+                                                fn_pass_canon$selected == T &
+                                                fn_pass_canon$gene_id %in% protein_coding),]$gene_id,
+                 all_RMS = combined_pass_canon[which(combined_pass_canon$pass == T &
+                                                            combined_pass_canon$selected == T &
+                                                            combined_pass_canon$gene_id %in% protein_coding),]$gene_id)
+
+venn_novel <- list(FP_RMS = fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id,
+                   FN_RMS = fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id,
+                   all_RMS = combined_pass_novel[which(combined_pass_novel$pass == T),]$gene_id)
+
+```
+
+4 categories of enrichment:
+FP-RMS = only enriched in FP-RMS
+FN-RMS = only enriched in FN-RMS
+both = found in both FP-RMS & FN-RMS
+union-RMS = only found when combining both datasets
+
+```{r}
+#lncRNA
+lnc_fp <- venn_lnc$FP_RMS[which(!(venn_lnc$FP_RMS %in% venn_lnc$FN_RMS))]
+lnc_fn <- venn_lnc$FN_RMS[which(!(venn_lnc$FN_RMS %in% venn_lnc$FP_RMS))]
+lnc_both <- venn_lnc$FP_RMS[which(venn_lnc$FP_RMS %in% venn_lnc$FN_RMS)]
+lnc_weak <- venn_lnc$all_RMS[which(!(venn_lnc$all_RMS %in% c(venn_lnc$FP_RMS,venn_lnc$FN_RMS)))]
+
+# protein coding
+pc_fp <- venn_pc$FP_RMS[which(!(venn_pc$FP_RMS %in% venn_pc$FN_RMS))]
+pc_fn <- venn_pc$FN_RMS[which(!(venn_pc$FN_RMS %in% venn_pc$FP_RMS))]
+pc_both <- venn_pc$FP_RMS[which(venn_pc$FP_RMS %in% venn_pc$FN_RMS)]
+pc_weak <- venn_pc$all_RMS[which(!(venn_pc$all_RMS %in% c(venn_pc$FP_RMS,venn_pc$FN_RMS)))]
+
+# novel genes
+novel_fp <- venn_novel$FP_RMS[which(!(venn_novel$FP_RMS %in% venn_novel$FN_RMS))]
+novel_fn <- venn_novel$FN_RMS[which(!(venn_novel$FN_RMS %in% venn_novel$FP_RMS))]
+novel_both <- venn_novel$FP_RMS[which(venn_novel$FP_RMS %in% venn_novel$FN_RMS)]
+novel_weak <- venn_novel$all_RMS[which(!(venn_novel$all_RMS %in% c(venn_novel$FP_RMS,venn_novel$FN_RMS)))]
+
+rms_enriched <- unique(c(lnc_fp,lnc_fn,lnc_both,pc_fp,pc_fn,pc_both,novel_fp,novel_fn,novel_both))
+
+```
+
+
+## ORF table
+
+```{r}
+# Generate table genomic ORF locations
+orfs_locations <- data.frame(rms_orfquant_orfs$ORFs_gen) %>%
+  mutate(ORF_id_tr = names(rms_orfquant_orfs$ORFs_gen)) %>%
+  group_by(ORF_id_tr) %>%
+  mutate(ORF_ranges = paste0(seqnames, ":", min(start), "-", max(end))) %>%
+  dplyr::select(c("ORF_id_tr", "ORF_ranges")) %>%
+  distinct()
+
+# Generate ORF table
+orf_table <- orfs_locations %>%
+  left_join(orfs_tx_df, by = c("ORF_id_tr")) # Add uniprot column
+```
+
+#### ORF annotation
+
+```{r load regions}
+
+txdb <- AnnotationDbi::loadDb(txdb_loc)
+
+# Extract CDS regions from txdb
+cds_tx <- cdsBy(txdb, by = "tx", use.names = T)  # not used currently
+cds_gene <- cdsBy(txdb, "gene")
+cds_gene_unlist <- unlist(cds_gene)
+
+# Extract ORF genomic ranges
+orfs_gen <- rms_orfquant_orfs$ORFs_gen
+orf_ranges <- split(orfs_gen, names(orfs_gen))
+```
+
+```{r ORF CDS similarity}
+overlaps <- GenomicRanges::findOverlaps(orf_ranges, cds_gene)
+
+overlap_width <- sum(width(GenomicRanges::intersect(orf_ranges[queryHits(overlaps)], cds_gene[subjectHits(overlaps)])))
+
+overlap_df <- data.frame(queryIdx = queryHits(overlaps), 
+                         subjectIdx = subjectHits(overlaps),
+                         overlapWidth = overlap_width)
+
+max_overlaps <- overlap_df[order(overlap_df$queryIdx, -overlap_df$overlapWidth),]
+max_overlaps <- max_overlaps[!duplicated(max_overlaps$queryIdx),]
+
+query_idx <- max_overlaps$queryIdx
+subject_idx <- max_overlaps$subjectIdx
+
+selected_overlaps <- data.frame(
+  queryHits = 1:length(orf_ranges),
+  subjectHits = rep(NA, length(orf_ranges))
+)
+
+selected_overlaps$subjectHits[selected_overlaps$queryHits %in% query_idx] <- subject_idx
+
+result_list <- GRangesList(rep(list(GRanges()), length(orf_ranges)))
+names(result_list) <- names(orf_ranges)
+
+non_na_indices <- !is.na(selected_overlaps$subjectHits)
+result_list[selected_overlaps$queryHits[non_na_indices]] <- cds_gene[selected_overlaps$subjectHits[non_na_indices]]
+no_overlap_idx <- lengths(result_list) == 0
+no_overlap_names <- names(which(no_overlap_idx))
+
+result_list[no_overlap_idx] <- GRangesList(pbapply::pblapply(no_overlap_names, function(name) {
+  orf_parent_gene <- orf_table$gene_id[match(name, orf_table$ORF_id_tr)]  # You need orf_table here, which contains mappings between ORF IDs and parent gene IDs
+  cds_parent_gene <- cds_gene_unlist[which(names(cds_gene_unlist) == orf_parent_gene)] # Turns out I didn't need to find nearest CDS regions using `nearest()`, I could just use the parent gene ID -> an ORF can't be a dORF or uORF if it's in a different gene
+  return(cds_parent_gene)
+}))
+
+cds_matches_grl <- result_list
+```
+
+```{r}
+cdsRangeSimilarity <- width(range(orf_ranges)) / (width(range(cds_matches_grl))-3)
+cds_strand <- ifelse(elementNROWS(cds_matches_grl) > 0, as.character(unique(strand(cds_matches_grl))), NA)
+
+orf_strand <- as.character(unlist(runValue(strand(orf_ranges))))
+orf_start <- ifelse(orf_strand == "+", min(start(orf_ranges)), max(end(orf_ranges)))
+orf_stop <- ifelse(orf_strand == "+", max(end(orf_ranges)), min(start(orf_ranges)))
+
+ann_start <- ifelse(cds_strand == "+", min(start(cds_matches_grl)), max(end(cds_matches_grl)))
+ann_stop <- ifelse(cds_strand == "+", max(end(cds_matches_grl)) - 3, min(start(cds_matches_grl)) + 3)
+
+orf_category <- rep("Unknown", length(orf_ranges))
+
+# Positive strand
+pos_strand_idx <- orf_strand == "+"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start == ann_start] <- "ORF_annotated"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start < ann_start] <- "N_extension"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start > ann_start] <- "N_truncation"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_stop] <- "overl_uORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_start] <- "uORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop > ann_stop] <- "NC_extension"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_stop] <- "overl_dORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_stop & orf_stop > ann_stop] <- "dORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop < ann_stop] <- "nested_ORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop < ann_stop] <- "C_truncation"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop > ann_stop] <- "C_extension"
+
+# Negative strand
+neg_strand_idx <- orf_strand == "-"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start == ann_start] <- "ORF_annotated"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start > ann_start] <- "N_extension"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start < ann_start] <- "N_truncation"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_stop] <- "overl_uORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_start] <- "uORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop < ann_stop] <- "NC_extension"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_stop] <- "overl_dORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_stop & orf_stop < ann_stop] <- "dORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop > ann_stop] <- "nested_ORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop > ann_stop] <- "C_truncation"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop < ann_stop] <- "C_extension"
+
+orf_category[lengths(cds_matches_grl) == 0] <- "novel"
+cdsRangeSimilarity[lengths(cds_matches_grl) == 0] <- NA
+
+new_category_df <- data.frame(orf_id = names(orf_ranges),
+                              start_dif = abs(orf_start - ann_start),
+                              cdsRangeSimilarity = as.numeric(cdsRangeSimilarity),
+                              stop_same = ifelse(orf_stop == ann_stop,
+                                                 T,F),
+                              
+                              orf_category_new = orf_category,
+                              
+                              orf_cds = ifelse(cdsRangeSimilarity >= 0.9 & cdsRangeSimilarity <= 1.1,
+                                               T,
+                                               F)
+                              ) %>%
+  dplyr::mutate(start_check = ifelse(start_dif > 0,
+                                                 T,F),
+                same_as_cds = ifelse(start_dif < 99 &
+                start_check == T &
+                stop_same == T &
+                orf_cds == T,T,F))
+
+write.csv(new_category_df,
+          file = paste(ribo_dir,
+                       "results/orf_reannotation",
+                       "orfquant_cds_similarity.csv",
+                       sep= "/"))
+
+```
+
+```{r check ORF overlap}
+check_anno <- data.frame(ORF_id_tr = names(orf_ranges),
+                         new_annot = orf_category) %>%
+  dplyr::left_join(orfs_tx_df[,c("ORF_id_tr","ORF_category_Tx","gene_id","ORF_category_Gen")]) %>%
+  dplyr::mutate(new_annot = ifelse(gene_id %in% lnc_rna, "lncORF",new_annot),
+                strand = orf_strand,
+                orf_start = orf_start,
+                orf_stop = orf_stop,
+                ann_start = ann_start,
+                ann_stop = ann_stop)
+
+
+```
+
+#### Protein similarity
+
+```{r annotate canon proteins}
+# Add uniprot IDs
+require('biomaRt')
+mart = biomaRt::useEnsembl("ENSEMBL_MART_ENSEMBL")  # Use same ensembl version as used for generating custom annotation
+mart <- biomaRt::useDataset('hsapiens_gene_ensembl', mart)
+annotLookup <- biomaRt::getBM(
+  mart = mart,
+  attributes = c(
+    'ensembl_gene_id',
+    'uniprot_gn_id'),
+  uniqueRows=FALSE) %>%
+  dplyr::group_by(ensembl_gene_id) %>% 
+  dplyr::mutate(uniprot_gn_ids = paste0(uniprot_gn_id, collapse = ";")) %>%
+  ungroup() %>%
+  dplyr::select(c(ensembl_gene_id, uniprot_gn_ids)) %>%
+  dplyr::distinct()
+
+orf_table <- orf_table %>%
+  left_join(annotLookup, by = c("gene_id" = "ensembl_gene_id"))
+
+```
+
+For some reason, ~ 3000 ORFs have not been included in the PPM calculation
+
+```{r annotate protein similarity}
+simscore <- read.delim(paste(ribo_dir,
+                               "results/orf_reannotation",
+                               "RMS_merged_ORFquant_orfs_simScore.csv",
+                               sep = "/"),
+          sep = ",")
+
+orf_table_not_final <- orf_table %>%
+  dplyr::right_join(simscore[,c("similarity_score","orf_id",
+                                "number_patient_samples", "number_organoid_samples",
+                                "number_fp_samples","number_fn_samples","number_samples")], 
+                    by = c("ORF_id_tr" = "orf_id")) %>%
+  dplyr::mutate(similarity_score = as.numeric(similarity_score),
+                cdsRangeSimilarity = as.numeric(cdsRangeSimilarity),
+                expr_threshold = ifelse(number_patient_samples > 3,T,F))
+
+```
+
+#### PPM annotation
+
+```{r}
+p_sites_mat_location <- paste(ribo_dir,"analysis/p_site_quantification",
+                              "RMS_orfquant_merged_quant_psites.txt",
+                              sep="/")
+ref_p_sites_location <- paste(ribo_dir,"analysis/p_site_quantification/bedfiles",
+                              "RMS_merged_psites_Detected_ORFs.gtf_psites_p0.sorted.bed",
+                              sep = "/")
+
+# Load P site counts
+p_sites_mat <- read.table(p_sites_mat_location, check.names = F)
+counts_psites <- data.frame(p_sites_mat, check.names = F) %>%
+  dplyr::select(1:50) %>%
+  dplyr::mutate(ppm_sum = rowSums(.),
+                ppm_mean = rowMeans(.),
+                ppm_median = rowMedians(as.matrix(.))) %>%
+  tibble::rownames_to_column(var = "orf_id")
+
+orf_table_not_final <- orf_table_not_final %>%
+  dplyr::left_join(counts_psites[,c("orf_id","ppm_sum","ppm_mean","ppm_median")], 
+                   by = c("ORF_id_tr" = "orf_id"))
+
+```
+
+#### Write results
+
+```{r}
+write.table(orf_table_not_final, file = paste(ribo_dir,
+                                             "results/orf_reannotation",
+                                             "RMS_ORFquant_table.csv",
+                                             sep = "/"),
+            quote = F,
+            sep = ",")
+```

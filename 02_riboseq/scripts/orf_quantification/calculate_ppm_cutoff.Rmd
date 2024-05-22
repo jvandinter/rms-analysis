@@ -1,0 +1,166 @@
+---
+title: "RMS quantification"
+author: "JD"
+date: "2024-04-10"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(rtracklayer)
+})
+```
+
+```{r parameters}
+basedir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+
+ribo_dir = paste(basedir,
+                 "02_riboseq", sep = "/")
+```
+
+## ORFquant
+
+For some reason ~ 3000 ORFs have not been quantified, see what's wrong
+```{r }
+test_bed <- rtracklayer::import("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/p_site_quantification/bedfiles/099-LIB-1-RMS-ORG-RMS410-FP-2-SEDH_merged_psites.sorted.bed")
+head(test_bed)
+```
+
+```{r}
+
+# Set locations
+p_sites_mat_location <- paste(ribo_dir,"analysis/p_site_quantification",
+                              "RMS_orfquant_merged_quant_psites.txt",
+                              sep="/")
+ref_p_sites_location <- paste(ribo_dir,"analysis/p_site_quantification/bedfiles",
+                              "RMS_merged_psites_Detected_ORFs.gtf_psites_p0.sorted.bed",
+                              sep = "/")
+
+# Load P site counts
+p_sites_mat <- read.table(p_sites_mat_location, check.names = F)
+counts_psites <- data.frame(p_sites_mat, check.names = F)
+
+# Load metadata
+metadata <- data.frame(sample_id = colnames(p_sites_mat)) %>%
+  dplyr::mutate(fusion = ifelse(sample_id == "RMS_merged","merged",
+                                ifelse(grepl("FP|aRMS",sample_id),"FP","FN")),
+                sampletype = ifelse(sample_id == "RMS_merged","merged",
+                                    ifelse(grepl("ORG",sample_id),"ORG","PAT"))) %>%
+  dplyr::filter(!(fusion =="merged"))
+
+# Load ORF lengths
+ORF_lengths <- data.table::fread(ref_p_sites_location, col.names = c("chrom", "start", "end", "ref_id", "frame", "strand")) %>%
+  subset(!grepl("pATG|pST", .$frame)) %>%
+  group_by(ref_id) %>%
+  summarize(
+    n_codons = n()/3, 
+    length = n(), 
+    length_kb = n()/1000) %>%
+  column_to_rownames("ref_id")
+
+# Calculate ORF PPM
+row_indices <- match(rownames(ORF_lengths), 
+                     rownames(counts_psites))
+ORF_lengths_match <- ORF_lengths[order(row_indices),]
+all(rownames(ORF_lengths_match) == rownames(counts_psites))   # [1] TRUE
+lengths_kb <- ORF_lengths_match$length_kb
+rpk <- counts_psites / lengths_kb
+pm_scalingfactors <- colSums(rpk)/1000000
+ppm <- t(t(rpk) / pm_scalingfactors)[,1:50]
+
+write.table(ppm, paste(ribo_dir,"analysis/orf_quantification",
+                            "ppm_orfquant.txt", sep = "/"),
+            quote = F, sep =",")
+
+mat_cutoff <- ifelse(ppm > 1, 1, 0) 
+write.csv(mat_cutoff, paste(ribo_dir,
+                            "analysis/orf_quantification",
+                            "ORF_sample_sharing_table.csv", 
+                            quote = F,
+                            sep = ",")
+
+patient_samples <- subset(metadata, metadata$sampletype == "PAT")$sample_id
+organoid_samples <- subset(metadata, metadata$sampletype == "ORG")$sample_id
+fp_samples <- subset(metadata, metadata$fusion == "FP")$sample_id
+fn_samples <- subset(metadata, metadata$fusion == "FN")$sample_id
+
+mat_cutoff_summary <- data.frame(number_patient_samples = rowSums(mat_cutoff[, patient_samples]),
+                                 number_organoid_samples = rowSums(mat_cutoff[, organoid_samples]),
+                                 number_fp_samples = rowSums(mat_cutoff[, fp_samples]),
+                                 number_fn_samples = rowSums(mat_cutoff[, fn_samples]),
+                                 number_samples = rowSums(mat_cutoff))
+
+write.csv(mat_cutoff_summary, paste(ribo_dir,"analysis/orf_quantification",
+                                    "ORF_sample_sharing_summary.csv", 
+                                    quote = F,
+                                    sep = ",")
+
+```
+
+## PRICE
+
+```{r}
+
+# Set locations
+p_sites_mat_location <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/price_p_site_quantification/RMS_price_merged_quant_psites.txt"
+ref_p_sites_location <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/price_p_site_quantification/bedfiles/RMS_merged_price_reduced_ORFs.gtf_psites_p0.sorted.bed"
+
+# Load P site counts
+p_sites_mat <- read.table(p_sites_mat_location, check.names = F)
+counts_psites <- data.frame(p_sites_mat, check.names = F)
+
+# Load metadata
+metadata <- data.frame(sample_id = colnames(p_sites_mat)) %>%
+  dplyr::mutate(fusion = ifelse(sample_id == "RMS_merged","merged",
+                                ifelse(grepl("FP|aRMS",sample_id),"FP","FN")),
+                sampletype = ifelse(sample_id == "RMS_merged","merged",
+                                    ifelse(grepl("ORG",sample_id),"ORG","PAT"))) %>%
+  dplyr::filter(!(fusion =="merged"))
+
+# Load ORF lengths
+ORF_lengths <- data.table::fread(ref_p_sites_location, col.names = c("chrom", "start", "end", "ref_id", "frame", "strand")) %>%
+  subset(!grepl("pATG|pST", .$frame)) %>%
+  group_by(ref_id) %>%
+  summarize(
+    n_codons = n()/3, 
+    length = n(), 
+    length_kb = n()/1000) %>%
+  column_to_rownames("ref_id")
+
+# Calculate ORF PPM
+row_indices <- match(rownames(ORF_lengths), rownames(counts_psites))
+ORF_lengths_match <- ORF_lengths[order(row_indices),]
+all(rownames(ORF_lengths_match) == rownames(counts_psites))   # [1] TRUE
+lengths_kb <- ORF_lengths_match$length_kb
+rpk <- counts_psites / lengths_kb
+pm_scalingfactors <- colSums(rpk)/1000000
+ppm <- t(t(rpk) / pm_scalingfactors)[,1:50]
+
+write.table(ppm, paste(ribo_dir,"analysis/orf_quantification",
+                            "ppm_price.txt", sep = "/"),
+            quote = F, sep =",")
+
+mat_cutoff <- ifelse(ppm > 1, 1, 0) 
+write.csv(mat_cutoff, paste(ribo_dir,
+                            "analysis/orf_quantification",
+                            "ORF_PRICE_sharing_table.csv", 
+                            sep = "/"), 
+                            quote = F)
+
+patient_samples <- subset(metadata, metadata$sampletype == "PAT")$sample_id
+organoid_samples <- subset(metadata, metadata$sampletype == "ORG")$sample_id
+fp_samples <- subset(metadata, metadata$fusion == "FP")$sample_id
+fn_samples <- subset(metadata, metadata$fusion == "FN")$sample_id
+
+mat_cutoff_summary <- data.frame(number_patient_samples = rowSums(mat_cutoff[, patient_samples]),
+                                 number_organoid_samples = rowSums(mat_cutoff[, organoid_samples]),
+                                 number_fp_samples = rowSums(mat_cutoff[, fp_samples]),
+                                 number_fn_samples = rowSums(mat_cutoff[, fn_samples]),
+                                 number_samples = rowSums(mat_cutoff))
+
+write.csv(mat_cutoff_summary, paste(ribo_dir,"analysis/orf_quantification",
+                                    "ORF_PRICE_sharing_summary.csv",
+                                    sep = "/"),
+                                    quote = F)
+```
