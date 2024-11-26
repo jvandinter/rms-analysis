@@ -51,91 +51,6 @@ orfs_tx_df <-  data.frame(mcols(orfs_tx)[, c("ORF_id_tr", "Protein", "gene_id", 
   distinct()
 ```
 
-## RMS enrichment
-
-```{r load RMS enrichment}
-rms_gtf <- as.data.frame(rtracklayer::import.gff(paste(rna_dir,"analysis","rnaseq_pipeline","customannotation","RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")))
-
-protein_coding <- unique(rms_gtf[which(rms_gtf$gene_biotype == "protein_coding"),]$gene_id)
-lnc_rna <-unique(rms_gtf[which(rms_gtf$gene_biotype == "lncRNA"),]$gene_id)
-
-fp_pass_novel <- read.delim(paste(rna_dir,"results","quantification","FP-patient",
-                                  paste0("RMS_FP-patient_novel_enriched_matrix.txt"),sep = "/"), 
-                            sep = ";", header = T)
-fp_pass_canon <- read.delim(paste(rna_dir,"results","quantification","FP-patient",
-                                  paste0("RMS_FP-patient_canon_enriched_matrix.txt"),sep = "/"), 
-                            sep = ";", header = T)
-fn_pass_novel <- read.delim(paste(rna_dir,"results","quantification","FN-patient",
-                                  paste0("RMS_FN-patient_novel_enriched_matrix.txt"),sep = "/"), 
-                            sep = ";", header = T)
-fn_pass_canon <- read.delim(paste(rna_dir,"results","quantification","FN-patient",
-                                  paste0("RMS_FN-patient_canon_enriched_matrix.txt"),sep = "/"), 
-                            sep = ";", header = T)
-
-combined_pass_novel <- read.delim(paste(rna_dir,"results","quantification","old",
-                                  paste0("RMS_novel_enriched_matrix.txt"),sep = "/"), 
-                            sep = ";", header = T)
-
-combined_pass_canon <- read.delim(paste(rna_dir,"results","quantification","old",
-                                  paste0("RMS_canon_enriched_matrix.txt"),sep = "/"), 
-                            sep = ";", header = T)
-
-venn_lnc <- list(FP_RMS = fp_pass_canon[which(fp_pass_canon$pass == T & 
-                                                fp_pass_canon$selected == T &
-                                                fp_pass_canon$gene_id %in% lnc_rna),]$gene_id,
-                 FN_RMS = fn_pass_canon[which(fn_pass_canon$pass == T & 
-                                                fn_pass_canon$selected == T &
-                                                fn_pass_canon$gene_id %in% lnc_rna),]$gene_id,
-                 all_RMS = combined_pass_canon[which(combined_pass_canon$pass == T &
-                                                            combined_pass_canon$selected == T &
-                                                            combined_pass_canon$gene_id %in% lnc_rna),]$gene_id)
-
-venn_pc <- list(FP_RMS = fp_pass_canon[which(fp_pass_canon$pass == T & 
-                                                fp_pass_canon$selected == T &
-                                                fp_pass_canon$gene_id %in% protein_coding),]$gene_id,
-                 FN_RMS = fn_pass_canon[which(fn_pass_canon$pass == T & 
-                                                fn_pass_canon$selected == T &
-                                                fn_pass_canon$gene_id %in% protein_coding),]$gene_id,
-                 all_RMS = combined_pass_canon[which(combined_pass_canon$pass == T &
-                                                            combined_pass_canon$selected == T &
-                                                            combined_pass_canon$gene_id %in% protein_coding),]$gene_id)
-
-venn_novel <- list(FP_RMS = fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id,
-                   FN_RMS = fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id,
-                   all_RMS = combined_pass_novel[which(combined_pass_novel$pass == T),]$gene_id)
-
-```
-
-4 categories of enrichment:
-FP-RMS = only enriched in FP-RMS
-FN-RMS = only enriched in FN-RMS
-both = found in both FP-RMS & FN-RMS
-union-RMS = only found when combining both datasets
-
-```{r}
-#lncRNA
-lnc_fp <- venn_lnc$FP_RMS[which(!(venn_lnc$FP_RMS %in% venn_lnc$FN_RMS))]
-lnc_fn <- venn_lnc$FN_RMS[which(!(venn_lnc$FN_RMS %in% venn_lnc$FP_RMS))]
-lnc_both <- venn_lnc$FP_RMS[which(venn_lnc$FP_RMS %in% venn_lnc$FN_RMS)]
-lnc_weak <- venn_lnc$all_RMS[which(!(venn_lnc$all_RMS %in% c(venn_lnc$FP_RMS,venn_lnc$FN_RMS)))]
-
-# protein coding
-pc_fp <- venn_pc$FP_RMS[which(!(venn_pc$FP_RMS %in% venn_pc$FN_RMS))]
-pc_fn <- venn_pc$FN_RMS[which(!(venn_pc$FN_RMS %in% venn_pc$FP_RMS))]
-pc_both <- venn_pc$FP_RMS[which(venn_pc$FP_RMS %in% venn_pc$FN_RMS)]
-pc_weak <- venn_pc$all_RMS[which(!(venn_pc$all_RMS %in% c(venn_pc$FP_RMS,venn_pc$FN_RMS)))]
-
-# novel genes
-novel_fp <- venn_novel$FP_RMS[which(!(venn_novel$FP_RMS %in% venn_novel$FN_RMS))]
-novel_fn <- venn_novel$FN_RMS[which(!(venn_novel$FN_RMS %in% venn_novel$FP_RMS))]
-novel_both <- venn_novel$FP_RMS[which(venn_novel$FP_RMS %in% venn_novel$FN_RMS)]
-novel_weak <- venn_novel$all_RMS[which(!(venn_novel$all_RMS %in% c(venn_novel$FP_RMS,venn_novel$FN_RMS)))]
-
-rms_enriched <- unique(c(lnc_fp,lnc_fn,lnc_both,pc_fp,pc_fn,pc_both,novel_fp,novel_fn,novel_both))
-
-```
-
-
 ## ORF table
 
 ```{r}
@@ -292,6 +207,14 @@ check_anno <- data.frame(ORF_id_tr = names(orf_ranges),
 
 ```
 
+```{r combine results}
+
+orf_table <- orf_table %>%
+  left_join(new_category_df, by = c("ORF_id_tr" = "orf_id"))
+
+
+```
+
 #### Protein similarity
 
 ```{r annotate canon proteins}
@@ -330,8 +253,8 @@ orf_table_not_final <- orf_table %>%
                                 "number_patient_samples", "number_organoid_samples",
                                 "number_fp_samples","number_fn_samples","number_samples")], 
                     by = c("ORF_id_tr" = "orf_id")) %>%
-  dplyr::mutate(similarity_score = as.numeric(similarity_score),
-                cdsRangeSimilarity = as.numeric(cdsRangeSimilarity),
+  dplyr::mutate(similarity_score = dplyr::case_when(is.na(similarity_score) ~ 0,
+                                                    T ~ as.numeric(similarity_score)),
                 expr_threshold = ifelse(number_patient_samples > 3,T,F))
 
 ```
@@ -363,11 +286,12 @@ orf_table_not_final <- orf_table_not_final %>%
 
 #### Write results
 
-```{r}
-write.table(orf_table_not_final, file = paste(ribo_dir,
-                                             "results/orf_reannotation",
-                                             "RMS_ORFquant_table.csv",
-                                             sep = "/"),
+```{r }
+write.table(orf_table_not_final,
+            file = paste(ribo_dir,
+                         "results/orf_reannotation",
+                         "RMS_ORFquant_table.csv",
+                         sep = "/"),
             quote = F,
             sep = ",")
 ```

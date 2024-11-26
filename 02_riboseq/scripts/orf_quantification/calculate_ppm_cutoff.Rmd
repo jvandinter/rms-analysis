@@ -34,7 +34,7 @@ p_sites_mat_location <- paste(ribo_dir,"analysis/p_site_quantification",
                               "RMS_orfquant_merged_quant_psites.txt",
                               sep="/")
 ref_p_sites_location <- paste(ribo_dir,"analysis/p_site_quantification/bedfiles",
-                              "RMS_merged_psites_Detected_ORFs.gtf_psites_p0.sorted.bed",
+                              "RMS_merged_psites_Detected_ORFs_fixed.gtf_psites_p0.sorted.bed",
                               sep = "/")
 
 # Load P site counts
@@ -76,7 +76,7 @@ write.table(ppm, paste(ribo_dir,"analysis/orf_quantification",
 mat_cutoff <- ifelse(ppm > 1, 1, 0) 
 write.csv(mat_cutoff, paste(ribo_dir,
                             "analysis/orf_quantification",
-                            "ORF_sample_sharing_table.csv", 
+                            "ORF_sample_sharing_table.csv", sep = "/"), 
                             quote = F,
                             sep = ",")
 
@@ -92,7 +92,7 @@ mat_cutoff_summary <- data.frame(number_patient_samples = rowSums(mat_cutoff[, p
                                  number_samples = rowSums(mat_cutoff))
 
 write.csv(mat_cutoff_summary, paste(ribo_dir,"analysis/orf_quantification",
-                                    "ORF_sample_sharing_summary.csv", 
+                                    "ORF_sample_sharing_summary.csv", sep = "/"),
                                     quote = F,
                                     sep = ",")
 

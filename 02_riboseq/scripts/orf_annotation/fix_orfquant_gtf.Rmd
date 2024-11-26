@@ -1,0 +1,124 @@
+---
+title: "Fixing the ORFquant GTF output"
+output: html_notebook
+---
+
+# Fixing the GTF
+
+```{r}
+library(dplyr)
+library(ORFquant)
+library(Biostrings)
+```
+
+```{r}
+
+annotation <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_container/RMS_full_novel_filtered_corrected.gtf_Rannot"
+orfquant_results <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/ORFquant/RMS_merged_psites/RMS_merged_psites_final_ORFquant_results"
+orfquant_gtf_fixed <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/ORFquant/RMS_merged_psites/RMS_merged_psites_Detected_ORFs_fixed.gtf"
+
+```
+
+
+```{r}
+orfquant_orfs <- get(load(orfquant_results))
+
+load_annotation(annotation)  # needed for GTF_annotation
+
+ORFs_txs_feats <- orfquant_orfs$ORFs_txs_feats
+selected_txs <- sort(unique(unlist(ORFs_txs_feats$txs_selected)))
+
+ORFs_tx <- orfquant_orfs$ORFs_tx
+map_tx_genes <- mcols(ORFs_tx)[, c(
+  "ORF_id_tr",
+  "gene_id",
+  "gene_biotype",
+  "gene_name",
+  "transcript_id",
+  "transcript_biotype",
+  "P_sites",
+  "ORF_pct_P_sites",
+  "ORF_pct_P_sites_pN",
+  "ORFs_pM"
+)]
+
+ORFs_gen <- orfquant_orfs$ORFs_gen
+
+match_ORF <- match(names(ORFs_gen), map_tx_genes$ORF_id_tr)
+
+ORFs_gen$transcript_id <- map_tx_genes[match_ORF, "transcript_id"]
+
+match_tx <- match(ORFs_gen$transcript_id, map_tx_genes$transcript_id)
+
+ORFs_gen$transcript_biotype <- map_tx_genes[match_tx, "transcript_biotype"]
+ORFs_gen$gene_id <- map_tx_genes[match_tx, "gene_id"]
+ORFs_gen$gene_biotype <- map_tx_genes[match_tx, "gene_biotype"]
+ORFs_gen$gene_name <- map_tx_genes[match_tx, "gene_name"]
+ORFs_gen$ORF_id <- map_tx_genes[match_ORF, "ORF_id_tr"]
+
+ORFs_gen$P_sites <- round(map_tx_genes[match_ORF, "P_sites"], digits = 4)
+ORFs_gen$ORF_pct_P_sites <- round(map_tx_genes[match_ORF, "ORF_pct_P_sites"], digits =
+                                    4)
+ORFs_gen$ORF_pct_P_sites_pN <- round(map_tx_genes[match_ORF, "ORF_pct_P_sites_pN"], digits =
+                                       4)
+ORFs_gen$ORFs_pM <- round(map_tx_genes[match_ORF, "ORFs_pM"], digits = 4)
+ORFs_readthroughs <- ORFquant_results$ORFs_readthroughs
+
+if (is(ORFs_readthroughs$Protein, "list")) {
+  proteins_readthrough <- AAStringSet(lapply(ORFs_readthroughs$Protein, "[[", 1))
+} 
+else{
+  proteins_readthrough <- AAStringSet(ORFs_readthroughs$Protein)
+}
+if (length(proteins_readthrough) > 0) {
+  names(proteins_readthrough) <- paste(
+    ORFs_readthroughs$ORF_id_tr,
+    ORFs_readthroughs$gene_biotype,
+    ORFs_readthroughs$gene_id,
+    "readthrough",
+    "readthrough",
+    sep = "|"
+  )
+  proteins_readthrough <- narrow(proteins_readthrough, start = start(proteins_readthrough)[1] +
+                                   1)
+  proteins_readthrough <- AAStringSet(gsub(
+    proteins_readthrough,
+    pattern = "[*]",
+    replacement = "X"
+  ))
+}
+
+proteins <- AAStringSet(ORFs_tx$Protein)
+names(proteins) <- paste(
+  ORFs_tx$ORF_id_tr,
+  ORFs_tx$gene_biotype,
+  ORFs_tx$gene_id,
+  ORFs_tx$ORF_category_Gen,
+  ORFs_tx$ORF_category_Tx_compatible,
+  sep = "|"
+)
+proteins <- c(proteins, proteins_readthrough)
+# if(write_protein_fasta){
+#   writeXStringSet(proteins,filepath= paste(prefix,"Protein_sequences.fasta",sep="_"))
+# }
+
+map_tx_genes <- GTF_annotation$trann
+#ORFs_gen$transcript_id<-names(ORFs_gen)
+ORFs_gen$type = "CDS"
+exs_gtf <- unlist(GTF_annotation$exons_txs[selected_txs])
+mcols(exs_gtf) <- NULL
+exs_gtf$transcript_id <- names(exs_gtf)
+exs_gtf$transcript_biotype <- map_tx_genes[match(exs_gtf$transcript_id, map_tx_genes$transcript_id), "transcript_biotype"]
+exs_gtf$gene_id <- map_tx_genes[match(exs_gtf$transcript_id, map_tx_genes$transcript_id), "gene_id"]
+exs_gtf$gene_biotype <- map_tx_genes[match(exs_gtf$transcript_id, map_tx_genes$transcript_id), "gene_biotype"]
+exs_gtf$gene_name <- map_tx_genes[match(exs_gtf$transcript_id, map_tx_genes$transcript_id), "gene_name"]
+mcols(exs_gtf)[, names(mcols(ORFs_gen))[!names(mcols(ORFs_gen)) %in% names(mcols(exs_gtf))]] <-
+  NA
+exs_gtf$type <- "exon"
+mcols(ORFs_gen) <- mcols(ORFs_gen)[, names(mcols(exs_gtf))]
+all <- sort(c(exs_gtf, ORFs_gen))
+all$`source` = "ORFquant"
+names(all) <- NULL
+suppressWarnings(export.gff2(object = all, con = orfquant_gtf_fixed))
+
+```

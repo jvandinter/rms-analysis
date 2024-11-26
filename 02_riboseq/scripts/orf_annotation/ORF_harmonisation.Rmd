@@ -12,7 +12,7 @@ library(tidyr)
 library(rtracklayer)
 library(Biostrings)
 library(ggplot2)
-library(BSgenome.Homo.sapiens.EWSfull)
+library(BSgenome.Homo.sapiens.RMScontainer)
 
 ```
 
@@ -47,7 +47,7 @@ tx2gene <- AnnotationDbi::select(txdb,
                   "TXNAME") %>%
   dplyr::rename(transcript_id = TXNAME, gene_id = GENEID)
 main_cds <- GenomicFeatures::cdsBy(x = txdb, by = "tx", use.names = T)
-main_cds_sequence <- GenomicFeatures::extractTranscriptSeqs(x = BSgenome.Homo.sapiens.EWSfull,
+main_cds_sequence <- GenomicFeatures::extractTranscriptSeqs(x = BSgenome.Homo.sapiens.RMScontainer,
                                                    transcripts = main_cds)
 main_cds_sequence <- main_cds_sequence[which((width(main_cds_sequence) %% 3) == 0),]
 cds_proteins <- Biostrings::translate(main_cds_sequence) %>%
@@ -72,7 +72,7 @@ price_orf_table <- read.delim(paste(ribo_dir,
                          sep = "/"), sep = ",") %>%
   dplyr::mutate(ORF_ranges = paste0(seqnames,":",start,"-",end),
                 translated = ifelse(number_patient_samples > 3, T,F)) %>%
-  dplyr::select(-c("seqnames","start","end","width","strand")) %>%
+  dplyr::select(-c("seqnames","start","end","width","strand","RMS_enriched","uniprot_gn_ids")) %>%
   dplyr::rename(orf_id = name) %>%
   dplyr::filter(!(is.na(ppm_sum)))
 
@@ -80,7 +80,9 @@ orfquant_table <- read.delim(paste(ribo_dir,
                          "results/orf_reannotation",
                          "RMS_ORFquant_table.csv",
                          sep = "/"), sep = ",") %>%
-  dplyr::select(-c("expr_threshold","cdsRangeSimilarity",
+  dplyr::select(-c("expr_threshold","start_dif",
+                   "cdsRangeSimilarity","stop_same","orf_cds",
+                   "start_check","same_as_cds",
                    "P_sites_raw","P_sites_raw_uniq","transcript_biotype",
                    "ORF_category_Tx","ORF_category_Gen")) %>%
   dplyr::rename(orf_id = ORF_id_tr) %>%
@@ -92,109 +94,91 @@ rms_orf_table <- rbind(orfquant_table,
 
 ```
 
+
+## RMS enrichment
+
+```{r load RMS enrichment}
+rms_gtf <- as.data.frame(rtracklayer::import.gff(paste(rna_dir,"analysis","rnaseq_pipeline","customannotation","RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")))
+
+fp_table <- read.delim(paste(rna_dir,
+                                "results/quantification/",
+                                "RMS-FP_enrichment.csv", sep="/"), 
+                          sep = ",")
+fp_enriched <- fp_table %>% 
+                      dplyr::filter(enriched == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+fn_table <- read.delim(paste(rna_dir, 
+                                "results/quantification/",
+                                "RMS-FN_enrichment.csv", sep="/"), 
+                          sep = ",")
+fn_enriched <- fn_table %>% 
+                      dplyr::filter(enriched == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+rms_table <- read.delim(paste(rna_dir, "results/quantification/",
+                                 "RMS_enrichment.csv", sep="/"), 
+                           sep = ",")
+rms_enriched <- rms_table %>% 
+                      dplyr::filter(enriched == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+enriched_genes <- c(fp_enriched, 
+                    rms_enriched,
+                    fn_enriched) %>% unique()
+
+fp_specific <- fp_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+fn_specific <- fn_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+rms_specific <- rms_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+specific_genes <- c(fp_specific, 
+                    rms_specific,
+                    fn_specific) %>% unique()
+
+rms_orf_table <- rms_orf_table %>%
+  dplyr::mutate(RMS_enriched = ifelse(gene_id %in% enriched_genes,T,F),
+                RMS_specific = ifelse(gene_id %in% specific_genes,T,F))
+
+```
+
 ## intORFs reannotation
 
 We want to only select out of frame intORFs. Some nested ORFs are in the same frame
-as the CDS region, 
-
-#### Ensembl CDS match
-
-```{r intORF annotation}
-
-
-# Select on nested ORFs
-nested_orfs <- rms_orf_table %>% 
-  dplyr::filter(orf_category_new == "nested_ORF")
-
-check_prot_sim <- nested_orfs %>%
-  dplyr::select(orf_id,gene_id,transcript_id,Protein) %>%
-  dplyr::mutate(Protein = substr(Protein,2,11)) %>%
-  dplyr::rename(int_protein = Protein,
-                tx_i = transcript_id) %>%
-  dplyr::right_join(cds_proteins, by = "gene_id",
-                   relationship = "many-to-many") %>%
-  # We are only interested in exact matches, so might as well use str_detect
-  dplyr::mutate(detect = stringr::str_detect(pattern = int_protein,
-                                             string = protein)) %>%
-  dplyr::group_by(orf_id) %>% 
-  # Check per ORF which have their start codons in-frame with CDS
-  dplyr::summarise(in_frame_cds = any(detect == T))
-
-```
-
-#### uniprot match
+as the CDS region
 
 ```{r}
-# Load UniProt Reference Proteome fasta files
-uniprot_fasta <- rtracklayer::import("/hpc/pmc_vanheesch/projects/Damon/Neuroblastoma_neoantigens/UP000005640_9606.fasta", type="AA")
-uniprot_fasta_additional <- rtracklayer::import("/hpc/pmc_vanheesch/projects/Damon/Neuroblastoma_neoantigens/UP000005640_9606_additional.fasta", type="AA")
 
-uniprot_fasta_names <- c(uniprot_fasta, uniprot_fasta_additional)
-names(uniprot_fasta_names) <- sapply(names(uniprot_fasta_names), function(x) {
-  strsplit(x, "\\|")[[1]][2]
-})
-
-uniprots_stringent <- uniprot_fasta_names %>%
-  as.data.frame() %>%
-  dplyr::rename(protein = x) %>%
-  tibble::rownames_to_column(var = "uniprot_id")
-
-# intORF protein IDs
-uniprot_intorfs_comparison_stringent <- nested_orfs %>%
-  dplyr::select(orf_id,Protein,uniprot_gn_ids) %>%
-  dplyr::rename(int_protein = Protein) %>%
-  # Chop intORF protein into first 10 AA
-  dplyr::mutate(int_protein = substr(int_protein,2,11)) %>%
-  # There is one ORF with 77 annotated uniprot IDs
-  tidyr::separate(uniprot_gn_ids, into = paste0("column", 1:77), sep = ";") %>%
-  tidyr::pivot_longer(cols = 3:ncol(.),names_to = "names", values_to = "uniprot_id") %>%
-  dplyr::filter(!is.na(uniprot_id)) %>%
-  dplyr::left_join(uniprots_stringent, by = "uniprot_id") %>%
-  dplyr::select(-names) %>%
-  dplyr::mutate(detect = stringr::str_detect(pattern = int_protein,
-                                             string = protein),
-                detect = tidyr::replace_na(detect, 0)) %>%
-  dplyr::group_by(orf_id) %>% 
-  # Check per ORF which have their start codons in-frame with CDS
-  dplyr::summarise(in_frame_uniprot_stringent = any(detect == T),
-                   uniprot_detected = sum(!(detect == 0)))
-
-```
-
-#### compare CCDS uniprot
-
-```{r}
-intorf_harmonisation <- nested_orfs %>%
-  dplyr::left_join(uniprot_intorfs_comparison_stringent, by = "orf_id") %>%
-  dplyr::left_join(check_prot_sim, by = "orf_id") %>%
-  dplyr::select(orf_id,
-                in_frame_cds,
-                in_frame_uniprot_stringent) %>%
-  dplyr::left_join(rms_orf_table %>% dplyr::select(orf_id,similarity_score,ORF_ranges), by = "orf_id") %>%
-  dplyr::mutate(in_frame_cds = tidyr::replace_na(in_frame_cds, 0),
-                in_frame_uniprot_stringent = tidyr::replace_na(in_frame_uniprot_stringent, 0),
-                intORF_stringent = ifelse(in_frame_cds == F & in_frame_uniprot_stringent == F,"OOF",
-                                   ifelse(in_frame_cds == 0 & in_frame_uniprot_stringent == F, "OOF",
-                                   ifelse(in_frame_cds == F & in_frame_uniprot_stringent == 0, "OOF","IF"))),
-                intORF_stringent = ifelse(intORF_stringent == "IF", "IF",
-                                   ifelse(intORF_stringent == "OOF" & similarity_score >= 20,"IF","OOF")))
-
-table(intorf_harmonisation$intORF_stringent)
-
-intorf_harmonisation %>%
-  dplyr::filter(!is.na(intORF_stringent)) %>%
-  ggplot(aes(x = similarity_score, fill = intORF_stringent)) +
-  geom_density(alpha = 0.4)
+intorfs = read.delim(paste(
+    ribo_dir,
+    "results/orf_reannotation",
+    "jorge_psites_intorfs.csv",
+    sep = "/"),
+  sep = ",")
 
 rms_orf_table <- rms_orf_table %>%
-  dplyr::left_join(intorf_harmonisation)
+  dplyr::mutate(orf_category_new = 
+                  dplyr::case_when(orf_category_new == "nested_ORF" & 
+                                     !(orf_id %in% intorfs$orf_id) ~ "not_nested",
+                                   T ~ orf_category_new))
 
-length(rms_orf_table[which(rms_orf_table$translated == T &
-                           rms_orf_table$RMS_enriched == T &
-                          rms_orf_table$intORF_stringent == "OOF" &
-                          grepl("__",rms_orf_table$orf_id)),]$orf_id)
-  
+table(rms_orf_table_ints$orf_category_new)
+
 ```
+
 #### ORFquant
 
 ```{r}
@@ -315,13 +299,13 @@ rms_orf_table <- rms_orf_table %>%
   dplyr::mutate(orf_caller = ifelse(grepl("__",orf_id),"PRICE","ORFquant"),
                 orf_category_new = ifelse(gene_biotype == "lncRNA","lncORF",orf_category_new))
 
-# write.table(x = rms_orf_table, file = paste(ribo_dir,
-#                                             "results/orf_reannotation",
-#                                             "RMS_harmonised_ORF_table.csv",
-#                                             sep = "/"),
-#             sep = ",", 
-#             quote = F, 
-#             row.names = F)
+ write.table(rms_orf_table, file = paste(ribo_dir,
+                                             "results/orf_reannotation",
+                                             "RMS_harmonised_ORF_table.csv",
+                                             sep = "/"),
+             sep = ",", 
+             quote = F, 
+             row.names = F)
 
 ```
 

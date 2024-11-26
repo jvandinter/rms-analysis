@@ -1,27 +1,40 @@
-message(paste(Sys.time(),"Loading required libraries ..."))
+---
+title: "RMS merged combined ORF"
+author: "JD"
+date: "2024-02-15"
+output: html_document
+---
+
+
+# Load libraries
+```{r}
+message("Loading required libraries ...")
 suppressPackageStartupMessages({
   library(tidyverse)
   library(data.table)
   library(GenomicRanges)
+  library(genomation)
   library(RColorBrewer)
   library(parallel)
 })
+```
 
-wd <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq"
+# Define directories, files and colors
+```{r}
+# The following variables need to be defined:
+gtf_file <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.sorted.gtf" # File: reference GTF
+gtf_rannot_file <- paste("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/","RMS_container","RMS_full_novel_filtered_corrected.gtf_Rannot", sep = "/") # File: Rannot file created by ORFquant
+wd <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq"
 savedir <- paste(wd, "results", sep = "/")
 
-gtf_file <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.gtf"
-gtf_rannot_file <- paste("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/","RMS_container","RMS_full_novel_filtered_corrected.gtf_Rannot", sep = "/")
+orfquant_files <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/ORFquant/RMS_merged_psites/RMS_merged_psites_final_ORFquant_results" # File vector: *final_ORFquant_results ORFquant output
+price_files <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/price/RMS_merged_price.orfs.bed" # File vector: *cit.bed PRICE output files
 
-thresholds <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)
+colors = c(brewer.pal(8, "Set1"))
+```
 
-orf_methods <- c("ORFquant", "PRICE", "Ribo-TISH", "Ribotricer")
-
-orfquant_files = list.files(paste(wd,"analysis","ORFquant", sep = "/"),
-                            pattern = ".*ORG.*final_ORFquant_results",
-                            recursive = T,
-                            full.names = T)
-
+# Define functions filtered
+```{r functions}
 prepare_orfs <- function(file_list, orf_method, ncores) {
   # Return a grangeslist with metadata columns representing the ORFs.
   #
@@ -60,8 +73,7 @@ prepare_orfs <- function(file_list, orf_method, ncores) {
   }
   orfs <- mclapply(orfs, function(orf) {
     orf_cats <- orf %>% as.data.frame() %>% 
-        mutate(transcript_id = as.character(str_match(group_name, 
-                                                      "ENST\\d+|MSTRG[.]\\d+[.]\\d+"))) %>% 
+        mutate(transcript_id = as.character(str_match(group_name, "ENST\\d+|MSTRG[.]\\d+[.]\\d+"))) %>% 
         group_by(group_name, transcript_id, strand) %>% 
         summarise(orf_sta = min(start), orf_end = max(end), 
                   .groups = "keep") %>% annotate_categories(gtf_ref) %>% 
@@ -164,6 +176,68 @@ add_stop_codon <- function(orf_granges, gtf_exon) {
   orf_shift <- orf_shift[m_cols$orf_id]
   mcols(orf_shift) <- m_cols
   return(orf_shift)
+}
+
+prepare_price <- function(files, ncores) {
+  # Read PRICE files into GRangesLists
+  #
+  # Parameters:
+  #   files - vector, contains the file paths to the PRICE .cit.bed files
+  #
+  # Returns:
+  #   orfs_list - list, contains GRangesLists with the PRICE orfs
+  orfs_list <- mclapply(files, function(x) readTranscriptFeatures(x)$exons, 
+                        mc.cores = ncores)
+  orfs_list <- lapply(orfs_list, function(x) split(x, x$name))
+  for (i in 1:length(files)) {
+    price_tsv_file <- str_replace(files[[i]], ".bed", ".tsv")
+    price_tsv <- read.table(file = price_tsv_file, sep = '\t', header = TRUE)
+    orfs_list[[i]] <- create_mcols(orfs_list[[i]], price_tsv)
+  }
+  return(orfs_list)
+}
+
+create_mcols <- function(price_orflist, price_table) {
+  # Create the metadata columns for PRICE
+  #
+  # Parameters:
+  #   price_orflist - GRangesList, ORFs detected by PRICE
+  #   price_table - data frame, created from the orfs.tsv file created by PRICE
+  #
+  # Returns:
+  #   price_orflist - GRangesList, with mcols added
+  orf_mcols <- data.frame(names(price_orflist))
+  orf_mcols <- orf_mcols %>% 
+    separate(1,c("Gene_id", "Transcript_id", "Type", "Type_index", 
+                 "StartCodon"), sep="__")
+  orf_mcols$orf_id <- paste(orf_mcols$Transcript_id, orf_mcols$Type, 
+                            orf_mcols$Type_index, sep = "_")
+  orf_mcols <- left_join(orf_mcols, price_table[c(2, 7, 9:ncol(price_table))], 
+                         c("orf_id"="Id"))
+  orf_mcols <- dplyr::rename(orf_mcols, p_value = p.value, "p_sites" = Total, 
+                             transcript_id = Transcript_id, gene_id = Gene_id)
+  orf_mcols[c(7:ncol(orf_mcols))] <- sapply(orf_mcols[c(7:ncol(orf_mcols))], 
+                                            as.numeric)
+  orf_mcols$orf_id <- names(price_orflist)
+  mcols(price_orflist) <- orf_mcols
+  return(price_orflist)
+}
+
+correct_price_geneid <- function(orfs_price) {
+  # Corrects PRICE gene ids for ORFs with mutliple gene ids assigned
+  #
+  # Parameters:
+  #   orfs_price - GRangesLists, the detected ORFs by PRICE
+  #
+  # Returns:
+  #   orfs_price - GRangesLists, same as input, but now each ORF has one gene id
+  m_cols <- data.frame(mcols(orfs_price))
+  gene_ids <- m_cols$gene_id
+  transcript_ids <- m_cols$transcript_id
+  m_cols$gene_id <- sapply(c(1:length(orfs_price)), 
+    function(x) get_correct_geneid(transcript_ids[x], gene_ids[x]))
+  mcols(orfs_price) <- m_cols
+  return(orfs_price)
 }
 
 get_correct_geneid <- function(t_id, g_id) {
@@ -331,7 +405,7 @@ get_partial_overlap <- function(com_orfs, thds) {
                                     com_orfs, type = "start")
   plus_end_overlap <- findOverlaps(com_orfs[strand(com_orfs) == "+"], 
                                    com_orfs, type = "end")
-  within_overlap_list <- split(within_overlap@to, within_overlap@from)
+  within_overlap_list <- split(to(within_overlap), from(within_overlap))
   minus_end_overlap_list <- split(to(minus_end_overlap), 
                                   from(minus_end_overlap))
   plus_end_overlap_list <- split(to(plus_end_overlap), from(plus_end_overlap))
@@ -375,8 +449,8 @@ get_overlap_counts <- function(m_overlap, thds, pred_source) {
   #     and whether an ORF needs to be shared between 1, 3 & 6 samples the total
   #     number of unique orfs
   sample_num <- ncol(m_overlap)/length(thds) - 1
-  graph_data <- matrix(0, ncol = 6, nrow = length(thds))
-  colnames(graph_data) <- c("x", "All", "Half","Common","Viable", "Source")
+  graph_data <- matrix(0, ncol = 5, nrow = length(thds))
+  colnames(graph_data) <- c("x", "Total", "Shared_3","Shared_6", "Source")
   graph_data <- as.data.frame(graph_data)
   graph_data[,"x"] <- thds
   for (i in 1:length(thds)) {
@@ -386,16 +460,12 @@ get_overlap_counts <- function(m_overlap, thds, pred_source) {
     duplicate_counts <- table(rowSums(overlap_counts > 0))
     total_orf <- sum(duplicate_counts)
     common_orf <- sum(duplicate_counts[sample_num])
-    half_orf <- sum(duplicate_counts[round(sample_num/2):sample_num])
-    viable_orf <- sum(duplicate_counts[3:sample_num])
-    graph_data[i,"All"] <- total_orf
-    graph_data[i, "Common"] <- common_orf
-    graph_data[i, "Half"] <- half_orf
-    graph_data[i, "Viable"] <- viable_orf
-    
-    
+    half_orf <- sum(duplicate_counts[(sample_num-3):sample_num])
+    graph_data[i,"Total"] <- total_orf
+    graph_data[i, "Shared_6"] <- common_orf
+    graph_data[i, "Shared_3"] <- half_orf
   }
-  graph_data <- graph_data %>% pivot_longer(cols = c("All", "Half","Common","Viable")) %>% 
+  graph_data <- graph_data %>% pivot_longer(cols = c("Total", "Shared_6", "Shared_3")) %>% 
     mutate(Source = pred_source)
   return(graph_data)
 }
@@ -411,32 +481,40 @@ filter_orfs <- function(m_overlap, m_orfs) {
   #     between how many samples the ORF was shared
   orfs_filtered <- m_overlap %>% 
     as.data.frame(row.names = names(m_orfs)) %>% 
-    filter(`1_parent` == 0) %>% 
-    dplyr::select(starts_with("1_") & !ends_with("parent")) %>% 
+    filter(`0.8_parent` == 0) %>% 
+    dplyr::select(starts_with("0.8_") & !ends_with("parent")) %>% 
     apply(1, function(x) sum(x>0)) %>% 
     as.data.frame()
   names(orfs_filtered) <- "rowsum"
   return(orfs_filtered)
 }
 
-message(paste(Sys.time(),"Preparing ORF reference ..."))
+```
+
+# Prepare GTF based references
+```{r}
+gtf_df <- rtracklayer::import(gtf_file) %>% 
+  as.data.frame() %>%
+  dplyr::select(gene_id,transcript_id,gene_name) %>%
+  dplyr::distinct()
+
 gtf_data <- fread(gtf_file, skip = 5)
 colnames(gtf_data) <- c("seqname", "source", "feature", "start", "end", 
                         "score", "strand", "frame", "attribute")
 tid_gid <- gtf_data %>% 
     mutate(transcript_id = as.character(str_match(attribute, "ENST\\d+|MSTRG[.]\\d+[.]\\d+")),
-           gene_id = as.character(str_match(attribute, "ENST\\d+|MSTRG[.]\\d+[.]\\d+"))) %>% 
+           gene_id = as.character(str_match(attribute, "ENSG\\d+|MSTRG[.]\\d+"))) %>% 
   select(transcript_id, gene_id) %>% 
   filter(!is.na(transcript_id)) %>% distinct()
 
 gtf_exon <- gtf_data %>% 
   mutate(transcript_id = as.character(str_match(attribute, "ENST\\d+|MSTRG[.]\\d+[.]\\d+")),
-         gene_id = as.character(str_match(attribute, "ENST\\d+|MSTRG[.]\\d+[.]\\d+"))) %>% 
+         gene_id = as.character(str_match(attribute, "ENSG\\d+|MSTRG[.]\\d+"))) %>% 
   filter(feature == "exon") %>% select(seqname, start, end, strand, 
                                        transcript_id, gene_id)
 
 lnc_genes <- gtf_data %>% 
-  mutate(gene_id = as.character(str_match(attribute, "ENST\\d+|MSTRG[.]\\d+[.]\\d+"))) %>% 
+  mutate(gene_id = as.character(str_match(attribute, "ENSG\\d+|MSTRG[.]\\d+"))) %>% 
   filter(feature == "gene") %>% 
   mutate(biotype = as.character(
     str_match(attribute,"(?<=gene_biotype \").*(?=\")"))) %>% 
@@ -450,27 +528,90 @@ gtf_ref <- GTF_annotation$cds_txs %>% as.data.frame() %>%
     summarise(gtf_sta = min(start), gtf_end = max(end)) %>% 
     dplyr::rename(transcript_id = group_name)
 
-message(paste(Sys.time(),"Preparing separate ORFs ..."))
+```
+
+```{r}
+thresholds <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)
+
+orf_methods <- c("ORFquant", "PRICE", "Ribo-TISH", "Ribotricer")
 
 orfquant_orfs <- prepare_orfs(orfquant_files, orf_methods[1], 2)
-
-save(orfquant_orfs, 
-     file = paste0(savedir, "/tumoroid/tumoroid_orfs_separate.RData"))
-
-message(paste(Sys.time(),"Preparing combined ORFs ..."))
-
-load(paste0(savedir, "/tumoroid/tumoroid_orfs_separate.RData"))
+price_orfs <- prepare_orfs(price_files, orf_methods[2], 2)
 
 orfquant_orfs_combined <- get_combined_orfs(orfquant_orfs, orfquant_files)
-
-save(orfquant_orfs_combined, 
-     file = paste0(savedir, "/tumoroid/tumoroid_orfs_combined.RData"))
-
-message(paste(Sys.time(),"Creating overlap matrix ..."))
+price_orfs_combined <- get_combined_orfs(price_orfs, price_files)
 
 orfquant_overlap <- get_partial_overlap(orfquant_orfs_combined, thresholds)
+price_overlap <- get_partial_overlap(orfs_combined[[2]], thresholds)
+```
 
-save(orfquant_overlap, 
-     file = paste0(savedir, "/tumoroid/tumoroid_orfs_overlap.RData"))
+Try adding PRICE & ORFquant results together and calculate combined ORFs
 
-message(paste(Sys.time(),"ORF analysis finished"))
+```{r}
+# 
+combined_grangeslist <- c(orfquant_orfs, price_orfs)
+combined_orfs <- get_combined_orfs(combined_grangeslist, c(orfquant_files,price_files))
+combined_orfs_overlap <- get_partial_overlap(combined_orfs, c(0.7,0.8,0.9,1.0)) %>%
+  as.data.frame() %>%
+  dplyr::mutate(orf_id = names(combined_orfs))
+
+```
+
+Some PRICE ORFs have an annotated non-canonical start codon, but actually have a ATG start very close to the annotated start.
+
+1) Find ORFs with the same end coordinates on the same strand with the same gene ID
+2) See if the start differs
+```{r }
+end_positions <- end(combined_orfs)
+strands <- strand(combined_orfs)
+# Step 1: Extract end positions and strands
+end_positions <- lapply(combined_orfs, end)
+strands <- lapply(combined_orfs, strand)
+
+# Step 2: Split by end position and strand
+split_grl <- split(grl, list(end_positions, strands))
+
+```
+
+Use ORF harmonisation script to combine ORFs from PRICE and ORFquant 
+```{r keep ORFs}
+orfs_keep <- filter_orfs(m_overlap = combined_orfs_overlap,
+                      m_orfs = combined_orfs) %>%
+  dplyr::mutate(orf_id = row.names(.))
+
+mat <- combined_orfs_overlap[,grepl("^0.8_",colnames(combined_orfs_overlap))] %>%
+  as.data.frame() %>%
+  dplyr::rename(ORFquant = `0.8_1`,PRICE = `0.8_2`,parent = `0.8_parent`) %>%
+  as.matrix()
+rownames(mat) <- names(combined_orfs) 
+
+mat <- as.data.frame(mat) %>%
+  dplyr::mutate(orf_id = rownames(.)) %>%
+  dplyr::filter(parent == "0") %>%
+  dplyr::left_join(orfs_keep)
+```
+
+```{r}
+
+```
+
+Check effectiveness of harmonisation
+
+```{r}
+
+ppm_table <- read.delim("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/p_site_quantification/RMS_orfquant_merged_quant_psites.txt", sep = " ") %>%
+  dplyr::mutate(psite_sum = rowSums(.),
+                orf_id = rownames(.))
+table(rowSums(ppm_table) == 0)
+
+table(unique(orfquant_orfs$ORF_id) %in% mat$orf_id)
+table(unique(price_orfs$name) %in% mat$orf_id)
+
+subset_price <- price_orfs[which(price_orfs$name %in% mat$orf_id),]
+subset_orfquant <- orfquant_orfs[which(orfquant_orfs$ORF_id %in% mat$orf_id),]
+
+rtracklayer::export.gff(subset_orfquant, con = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/results/combined/tmp_RMS_ORFquant.gtf")
+
+rtracklayer::export.bed(subset_price, con = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/results/combined/tmp_RMS_PRICE.bed")
+
+```

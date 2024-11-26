@@ -1,0 +1,138 @@
+---
+title: "RMS merged Psites ORFs"
+author: "JD"
+date: "2024-02-16"
+output: html_document
+---
+
+```{r libraries}
+library(magrittr)
+```
+
+```{r parameters}
+projectdir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+workdir = paste(projectdir,"02_riboseq", sep = "/")
+savedir = paste(workdir,"results",sep="/")
+
+orfquant_file = paste(workdir,"analysis","ORFquant","RMS_merged_psites","RMS_merged_psites_Detected_ORFs.gtf", sep = "/")
+
+price_file = paste(workdir,"analysis","price","RMS_merged_price.orfs.bed", sep = "/")
+
+pass_FP_canon = read.delim(paste(projectdir,"01_rnaseq","results","quantification","FP-patient","RMS_FP-patient_canon_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T & selected == T)
+
+pass_FP_novel = read.delim(paste(projectdir,"01_rnaseq","results","quantification","FP-patient","RMS_FP-patient_novel_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T)
+
+pass_canon = read.delim(paste(projectdir,"01_rnaseq","results","quantification","old","RMS_canon_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T & selected == T)
+
+pass_novel = read.delim(paste(projectdir,"01_rnaseq","results","quantification","old","RMS_novel_enriched_matrix.txt",sep = "/"), sep = ";") %>%
+  dplyr::filter(pass == T)
+
+```
+
+```{r create P-sites bedgraph}
+load(paste(workdir,"analysis","merged_p_sites","for_ORFquant_merged", sep = "/"))
+
+psites_plus <- for_ORFquant$P_sites_all[which(strand(for_ORFquant$P_sites_all) == "+"),]
+psites_minus <- for_ORFquant$P_sites_all[which(strand(for_ORFquant$P_sites_all) == "-"),]
+
+rtracklayer::export.bedGraph(psites_plus,paste(workdir,"analysis","merged_p_sites","RMS_merged_psites_plus.bedgraph", sep = "/"))
+
+rtracklayer::export.bedGraph(psites_minus,paste(workdir,"analysis","merged_p_sites","RMS_merged_psites_minus.bedgraph", sep = "/"))
+```
+
+```{r load ORFs}
+orfquant_orfs <- rtracklayer::import(orfquant_file)
+price_orfs <- rtracklayer::import(price_file)
+
+orfquant_rms_df <- as.data.frame(orfquant_orfs) %>%
+  dplyr::mutate(P_sites = as.integer(P_sites)) %>%
+  dplyr::filter(gene_id %in% c(pass_novel$gene_id))
+
+orfquant_class_k_df <- as.data.frame(orfquant_orfs) %>%
+  dplyr::mutate(P_sites = as.integer(P_sites)) %>%
+  dplyr::filter(grepl("ENSG",gene_id) & grepl("MSTRG",ORF_id) & type == "CDS")
+length(unique(orfquant_class_k_df$ORF_id))
+
+rms_enr_orf_id <- unique(orfquant_rms_df$ORF_id)
+
+orfquant_df <- as.data.frame(orfquant_orfs) %>%
+  dplyr::mutate(P_sites = as.integer(P_sites)) %>%
+  dplyr::filter(type == "CDS" & P_sites > 20)
+
+length(unique(orfquant_rms_df$gene_id))
+```
+
+# Translated genes
+
+```{r}
+rms_gtf_df <- rtracklayer::readGFF(txome_gtf) %>%
+  as.data.frame()
+
+translated <- unique(orfquant_df$gene_id)
+
+enriched_data <- rms_gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
+  dplyr::filter(gene_id %in% translated) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(gene_biotype = ifelse(gene_biotype == "stringtie","Novel gene",
+                               ifelse(grepl("pseudo",gene_biotype),"Pseudogene",
+                               ifelse(gene_biotype %in% c( "miRNA",
+                                                           "snRNA","misc_RNA","TEC",
+        "ribozyme",
+        "scaRNA",
+        "scRNA",
+        "sRNA",
+        "vault_RNA",
+        "misc_RNA"),"Misc RNA",ifelse(gene_biotype == "protein_coding","Protein coding",
+                                      ifelse(grepl("IG|TR",gene_biotype),"IG gene",gene_biotype ))))),
+                gene_biotype = factor(gene_biotype, levels = c("Protein coding","IG gene","lncRNA","Pseudogene","Misc RNA","Novel gene")))
+
+enriched_data <- enriched_data[!(duplicated(enriched_data$gene_id)),]
+
+table(enriched_data$gene_biotype)
+
+ggplot(enriched_data, aes(x = gene_biotype, y = after_stat(count), fill = gene_biotype)) +
+  geom_bar() +
+  geom_text(aes(label = after_stat(count)), size = 8, stat = "count", vjust = -0.2) +
+  scale_fill_manual(values = viridis::viridis(6, begin = 0.8, end = 0.2)) +
+  theme_classic(base_size = 20) +
+  scale_x_discrete(guide = guide_axis(angle = 45))
+
+```
+
+# Translated enriched genes
+
+```{r}
+
+translated <- unique(orfquant_rms_df$gene_id)
+
+enriched_data <- rms_gtf_df[,c("gene_id","gene_biotype","class_code")] %>%
+  dplyr::filter(gene_id %in% translated) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(gene_biotype = ifelse(gene_biotype == "stringtie","Novel gene",
+                               ifelse(grepl("pseudo",gene_biotype),"Pseudogene",
+                               ifelse(gene_biotype %in% c( "miRNA",
+                                                           "snRNA","misc_RNA","TEC",
+        "ribozyme",
+        "scaRNA",
+        "scRNA",
+        "sRNA",
+        "vault_RNA",
+        "misc_RNA"),"Misc RNA",ifelse(gene_biotype == "protein_coding","Protein coding",
+                                      ifelse(grepl("IG|TR",gene_biotype),"IG gene",gene_biotype ))))),
+                gene_biotype = factor(gene_biotype, levels = c("Protein coding","lncRNA","Pseudogene","Novel gene")))
+
+enriched_data <- enriched_data[!(duplicated(enriched_data$gene_id)),]
+
+table(enriched_data$gene_biotype)
+
+ggplot(enriched_data, aes(x = gene_biotype, y = after_stat(count), fill = gene_biotype)) +
+  geom_bar() +
+  geom_text(aes(label = after_stat(count)), size = 8, stat = "count", vjust = -0.2) +
+  scale_fill_manual(values = viridis::viridis(6, begin = 0.8, end = 0.2)) +
+  theme_classic(base_size = 20) +
+  scale_x_discrete(guide = guide_axis(angle = 45))
+
+```

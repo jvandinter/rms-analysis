@@ -1,16 +1,37 @@
-#!/bin/bash 
-#SBATCH --cpus-per-task 1
-#SBATCH --job-name ORF_combiner
-#SBATCH --gres=tmpspace:20G
-#SBATCH --mem=24G
-#SBATCH --time=24:00:00 
+#!/bin/bash
+#SBATCH --job-name calc_CDS
+#SBATCH --cpus-per-task 6
+#SBATCH --mem=120G
+#SBATCH --time=12:00:00
+#SBATCH --gres=tmpspace:10G
+
+# Parse command-line arguments
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+    -s|--script)
+    SCRIPT="$2"
+    shift
+    shift
+    ;;
+    "")
+    echo "Error: no option provided"
+    exit 1
+    ;;
+    *)
+    echo "Unknown option: $key"
+    exit 1
+    ;;
+esac
+done
 
 version="4.3.0"
 
 # Create temporary directory to be populated with directories to bind-mount in the container
 # where writable file systems are necessary. Adjust path as appropriate for your computing environment.
 singularity_dir="/hpc/local/Rocky8/pmc_vanheesch/singularity_images"
-wd="/hpc/pmc_vanheesch/projects/Jip/rms_analysis/02_riboseq"
 workdir=${TMPDIR}
 
 mkdir -p -m 700 ${workdir}/run ${workdir}/tmp ${workdir}/var/lib/rstudio-server
@@ -43,4 +64,4 @@ export APPTAINER_BIND="${workdir}/run:/run,${workdir}/tmp:/tmp,${workdir}/databa
 export APPTAINERENV_RSTUDIO_SESSION_TIMEOUT=0
 
 apptainer exec --cleanenv ${singularity_dir}/rstudio_${version}_bioconductor.sif \
-  Rscript ${wd}/scripts/ORF_characterization/patient/patient_protein_seq.R
+  Rscript ${SCRIPT}

@@ -1,0 +1,431 @@
+---
+title: "intORF check"
+author: "JD"
+date: "2024-05-16"
+output: html_document
+---
+
+Load CDS annotations CHECK
+Subset CDS annotations on in-frame P-sites CHECK
+Load intORF genomic loci CHECK
+Subset intORF on in-frame P-sites CHECK
+Check overlap between intORF P-sites & CDS P-sites
+
+```{r libraries}
+
+library(magrittr)
+library(dplyr)
+library(rtracklayer)
+library(GenomicRanges)
+
+```
+
+```{r parameters}
+basedir = "/hpc/pmc_vanheesch/projects/Luuk/EwingSarcomaProject"
+
+rna_dir = paste(basedir,
+                "rnaseq_analysis",sep="/")
+ribo_dir = paste(basedir,
+                 "riboseq_analysis", sep = "/")
+savedir = paste(ribo_dir,
+                "results/plots",sep="/")
+metadata_dir = paste(basedir,
+                     "documentation",sep="/")
+#txome_gtf <- import(paste(rna_dir, "analysis/customannotation/EwS_vanHeesch_Curie_merge_v2.gtf", sep="/"))
+txdb_loc <- paste0(rna_dir,"/analysis/customannotation/EwS_vanHeesch_Curie_merge_v2/EwS_vanHeesch_Curie_merge_v2.gtf_TxDb")
+
+orfquant_results_location <- "/hpc/pmc_vanheesch/projects/Luuk/EwingSarcomaProject/riboseq_analysis/analysis/final_set/ORFquant/vanHeesch_Curie_merged_v2/vanHeesch_Curie_merged_v2_final_ORFquant_results"
+
+```
+
+First, get all p0 sites from CDS regions
+
+```{bash fix}
+# Load required modules
+module load bedtools python
+
+container_dir="/hpc/local/Rocky8/pmc_vanheesch/singularity_images"
+outdir="/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis"
+scriptdir="/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/scripts/orf_quantification"
+
+# Set input variables
+orf_gtf="/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/Homo_sapiens.GRCh38.102.gtf"  # GTF file containing ORF definitions (eg CDS regions)
+is_anno="no"  # Is orf_GTF an annotation file with incomplete ORFs? (i.e. from Ensembl) [yes/no]
+out_dir="/hpc/pmc_vanheesch/projects/Luuk/EwingSarcomaProject/riboseq_analysis/analysis/p_site_quantification/ensembl_psites"  # Directory to output generated files
+mkdir -p ${out_dir}
+analysis_name="ensembl_102"  # Name of analysis run
+id_type="transcript_id"
+
+# Prepare output directory
+bedfiles_dir="${out_dir}/bedfiles/"
+mkdir -p "${bedfiles_dir}"
+
+python3 ${scriptdir}/calculate_psite_coords_final.py -i ${orf_gtf} -a "${is_anno}" -o "${bedfiles_dir}/" -t "${id_type}"
+
+ref_base=$(basename ${orf_gtf} .gtf)
+
+  # Sort resulting bed file
+  sort -k1,1 -k2,2n "${bedfiles_dir}/${ref_base}.gtf_psites_plus_partial.bed" > "${bedfiles_dir}/${ref_base}.gtf_psites_p0.sorted.bed"
+
+```
+
+```{r CDS annotation}
+
+
+cds_annotation <-
+  rtracklayer::import(
+    "/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/annotation/Homo_sapiens.GRCh38.102.gtf"
+  ) %>% as.data.frame()
+
+cds_annotation <- cds_annotation %>% dplyr::filter(type == "CDS")
+
+psites_cds <- read.delim(
+  paste(
+    ribo_dir,
+    "analysis/p_site_quantification/ensembl_psites/bedfiles",
+    "Homo_sapiens.GRCh38.102.gtf_psites_plus_partial.bed",
+    sep = "/"
+  ),
+  header = F
+) %>%
+  dplyr::filter(V4 %in% cds_annotation$transcript_id & V5 == "p0")
+
+cds_grl <- psites_cds %>%
+  dplyr::rename(
+    seqnames = V1,
+    start = V2,
+    stop = V3,
+    transcript_id = V4,
+    codon_pos = V5,
+    strand = V6
+  ) %>%
+  dplyr::left_join(cds_annotation %>% dplyr::select(transcript_id, gene_id) %>% dplyr::distinct(),
+                   by = "transcript_id") %>%
+  GenomicRanges::makeGRangesFromDataFrame()
+
+```
+
+```{r intORF annotation}
+
+
+# P-sites ORFquant
+orfquant_annotation <- read.delim(
+  paste(
+    ribo_dir,
+    "results",
+    "ews_ORFquant_table.csv",
+    sep = "/"
+  ),
+  sep = ","
+)
+
+psites_orfquant = read.delim(
+  paste(
+    ribo_dir,
+    "analysis/cell_lines/p_site_quantification/bedfiles",
+    "vanHeesch_Curie_merged_v2_Detected_ORFs_fixed.gtf_psites_p0.sorted.bed",
+    sep = "/"
+  ),
+  header = F
+) %>%
+  dplyr::filter(V4 %in% orfquant_annotation$ORF_id_tr & V5 == "p0")
+
+orfquant_intorfs <- psites_orfquant %>%
+  dplyr::rename(
+    seqnames = V1,
+    start = V2,
+    stop = V3,
+    orf_id = V4,
+    codon_pos = V5,
+    strand = V6
+  )
+
+# P-sites PRICE
+price_annotation <- read.delim(paste(
+  ribo_dir,
+  "results",
+  "price_orf_table.csv",
+  sep = "/"
+),
+sep = ",") 
+
+psites_price = read.delim(
+  paste(
+    ribo_dir,
+    "analysis/final_set/price_p_site_quantification/bedfiles/vanHeesch_Curie_merged_v2_price_reduced_ORFs.gtf_psites_p0.sorted.bed",
+    sep = "/"
+  ),
+  header = F
+) %>%
+  dplyr::filter(V4 %in% price_annotation$name & V5 == "p0")
+
+price_intorfs <- psites_price %>%
+  dplyr::rename(
+    seqnames = V1,
+    start = V2,
+    stop = V3,
+    orf_id = V4,
+    codon_pos = V5,
+    strand = V6
+  )
+
+# Combined them
+intorfs <- rbind(price_intorfs, orfquant_intorfs) %>%
+  GenomicRanges::makeGRangesFromDataFrame()
+names(intorfs) <- c(price_intorfs$orf_id, orfquant_intorfs$orf_id)
+
+
+  
+```
+
+
+
+```{r}
+
+# all p0 sites of CDS
+cds_grl
+
+# all p0 sites of intORFs
+intorfs
+
+
+# Compare intORF p0 with all CDS P-sites
+ol <- GenomicRanges::findOverlaps(query = cds_grl,
+                                  subject = intorfs)
+
+hit_orf_ids <- unique(names(intorfs[subjectHits(ol), ]))
+
+saveRDS(hit_orf_ids, paste(ribo_dir, "results/p_site_overlap_cds_orf_ids.RDS", sep = "/"))
+
+"ENSG00000102786__ENST00000442263__Variant__0__GTG" %in% hit_orf_ids
+"ENSG00000102786__ENST00000442263__Variant__0__GTG" %in% names(intorfs)
+
+intorfs_check <- data.frame(orf_id = unique(c(price_intorfs$orf_id,orfquant_intorfs$orf_i))[!(unique(c(price_intorfs$orf_id,orfquant_intorfs$orf_id)) %in% hit_orf_ids)]) %>%
+  dplyr::left_join(
+    rbind(
+      price_annotation %>% dplyr::select(name, orf_category_new, seqnames, start, end, gene_id) %>% dplyr::rename(ORF_id_tr = name) %>% dplyr::mutate(ORF_ranges = paste0(seqnames, ":", start, "-", end)) %>% dplyr::select(-seqnames, -start, -end),
+      orfquant_annotation %>% dplyr::select(ORF_id_tr, orf_category_new, ORF_ranges, gene_id)
+    ),
+    by = c("orf_id" = "ORF_id_tr")
+  )
+
+write.table(
+  intorfs_check,
+  file = paste(
+    ribo_dir,
+    "results",
+    "ews_psites_intorfs.csv",
+    sep = "/"
+  ),
+  sep = ","
+)
+```
+
+## Because of weird annotation errors, some intORFs are currently annotated as intORF when they might actually be uORF for example. We try to fix it here
+
+```{r }
+#Create overlap specific for intORF ranges
+cds_gene_tx <- GenomicFeatures::cdsBy(txdb, "tx", use.names = T)
+cds_gene_tx_unlist <- unlist(cds_gene_tx)
+
+orf_ranges_nested <- orf_ranges[nested_orfs$orf_id] %>% split(names(orf_ranges))
+
+
+overlaps <- GenomicRanges::findOverlaps(orf_ranges_nested, cds_gene_tx)
+
+overlap_width <- sum(width(GenomicRanges::intersect(orf_ranges_nested[queryHits(overlaps)], cds_gene_tx[subjectHits(overlaps)])))
+
+overlap_df <- data.frame(queryIdx = queryHits(overlaps), 
+                         subjectIdx = subjectHits(overlaps),
+                         overlapWidth = overlap_width)
+
+max_overlaps <- overlap_df[order(overlap_df$queryIdx, -overlap_df$overlapWidth),]
+max_overlaps <- max_overlaps[!duplicated(max_overlaps$queryIdx),]
+
+query_idx <- max_overlaps$queryIdx
+subject_idx <- max_overlaps$subjectIdx
+
+selected_overlaps <- data.frame(
+  queryHits = 1:length(orf_ranges_nested),
+  subjectHits = rep(NA, length(orf_ranges_nested))
+)
+
+selected_overlaps$subjectHits[selected_overlaps$queryHits %in% query_idx] <- subject_idx
+
+result_list <- GRangesList(rep(list(GRanges()), length(orf_ranges_nested)))
+names(result_list) <- names(orf_ranges_nested)
+
+non_na_indices <- !is.na(selected_overlaps$subjectHits)
+result_list[selected_overlaps$queryHits[non_na_indices]] <- cds_gene_tx[selected_overlaps$subjectHits[non_na_indices]]
+no_overlap_idx <- lengths(result_list) == 0
+no_overlap_names <- names(which(no_overlap_idx))
+
+result_list[no_overlap_idx] <- GRangesList(pbapply::pblapply(no_overlap_names, function(name) {
+  orf_parent_transcript <- ews_orf_table$transcript_id[match(name, ews_orf_table$orf_id)]  # You need orf_table here, which contains mappings between ORF IDs and parent gene IDs
+  orf_parent_transcript <- cds_gene_tx_unlist[which(names(cds_gene_tx_unlist) == orf_parent_transcript)] # Turns out I didn't need to find nearest CDS regions using `nearest()`, I could just use the parent gene ID -> an ORF can't be a dORF or uORF if it's in a different gene
+  return(orf_parent_transcript)
+}))
+
+cds_matches_grl <- result_list[intorfs_check$orf_id]
+
+cds_matches_grl_price <- cds_matches_grl[grep("__", names(cds_matches_grl))]
+cds_matches_grl_price <- cds_matches_grl_price[names(cds_matches_grl_price)[order(names(cds_matches_grl_price))]]
+
+cds_matches_grl_oq <- cds_matches_grl[grepl("__", names(cds_matches_grl)) == F]
+cds_matches_grl_oq <- cds_matches_grl_oq[names(cds_matches_grl_oq)[order(names(cds_matches_grl_oq))]]
+
+```
+
+```{r }
+# For ORFquant ORFs
+
+orf_ranges_oq <- orf_ranges[names(cds_matches_grl_oq)] %>% split(names(cds_matches_grl_oq))
+orf_ranges_oq <- orf_ranges_oq[names(cds_matches_grl_oq)[order(names(cds_matches_grl_oq))]]
+
+cdsRangeSimilarity <- width(range(orf_ranges_oq)) / (width(range(cds_matches_grl_oq))-3)
+cds_strand <- ifelse(elementNROWS(cds_matches_grl_oq) > 0, as.character(unique(strand(cds_matches_grl_oq))), NA)
+
+orf_strand <- as.character(unlist(runValue(strand(orf_ranges_oq))))
+orf_start <- ifelse(orf_strand == "+", min(start(orf_ranges_oq)), max(end(orf_ranges_oq)))
+orf_stop <- ifelse(orf_strand == "+", max(end(orf_ranges_oq)), min(start(orf_ranges_oq)))
+
+ann_start <- ifelse(cds_strand == "+", min(start(cds_matches_grl_oq)), max(end(cds_matches_grl_oq)))
+ann_stop <- ifelse(cds_strand == "+", max(end(cds_matches_grl_oq)) - 3, min(start(cds_matches_grl_oq)) + 3)
+
+orf_category <- rep("Unknown", length(orf_ranges_oq))
+
+# Positive strand
+pos_strand_idx <- orf_strand == "+"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start == ann_start] <- "ORF_annotated"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start < ann_start] <- "N_extension"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start > ann_start] <- "N_truncation"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_stop] <- "overl_uORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_start] <- "uORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop > ann_stop] <- "NC_extension"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_stop] <- "overl_dORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_stop & orf_stop > ann_stop] <- "dORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop < ann_stop] <- "nested_ORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop < ann_stop] <- "C_truncation"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop > ann_stop] <- "C_extension"
+
+# Negative strand
+neg_strand_idx <- orf_strand == "-"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start == ann_start] <- "ORF_annotated"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start > ann_start] <- "N_extension"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start < ann_start] <- "N_truncation"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_stop] <- "overl_uORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_start] <- "uORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop < ann_stop] <- "NC_extension"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_stop] <- "overl_dORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_stop & orf_stop < ann_stop] <- "dORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop > ann_stop] <- "nested_ORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop > ann_stop] <- "C_truncation"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop < ann_stop] <- "C_extension"
+
+orf_category[lengths(cds_matches_grl_oq) == 0] <- "novel"
+
+new_category_df_oq <- data.frame(orf_id = names(orf_ranges_oq),
+                              start_dif = abs(orf_start - ann_start),
+                              cdsRangeSimilarity = as.numeric(cdsRangeSimilarity),
+                              stop_same = ifelse(orf_stop == ann_stop,
+                                                 T,F),
+                              
+                              orf_category_new = orf_category,
+                              
+                              orf_cds = ifelse(cdsRangeSimilarity >= 0.9 & cdsRangeSimilarity <= 1.1,
+                                               T,
+                                               F)
+                              )
+
+```
+
+```{r }
+# For PRICE ORFs
+
+orf_ranges_price <- orf_ranges[names(cds_matches_grl_price)] %>% split(names(cds_matches_grl_price))
+orf_ranges_price <- orf_ranges_price[names(cds_matches_grl_price)[order(names(cds_matches_grl_price))]]
+
+cdsRangeSimilarity <- width(range(orf_ranges_price)) / (width(range(cds_matches_grl_price)))
+cds_strand <- ifelse(elementNROWS(cds_matches_grl_price) > 0, as.character(unique(strand(cds_matches_grl_price))), NA)
+
+orf_strand <- as.character(unlist(runValue(strand(orf_ranges_price))))
+orf_start <- ifelse(orf_strand == "+", min(start(orf_ranges_price)), max(end(orf_ranges_price)))
+orf_stop <- ifelse(orf_strand == "+", max(end(orf_ranges_price)), min(start(orf_ranges_price)))
+
+ann_start <- ifelse(cds_strand == "+", min(start(cds_matches_grl_price)), max(end(cds_matches_grl_price)))
+ann_stop <- ifelse(cds_strand == "+", max(end(cds_matches_grl_price)) - 3, min(start(cds_matches_grl_price)))
+
+orf_category <- rep("Unknown", length(orf_ranges_price))
+
+# Positive strand
+pos_strand_idx <- orf_strand == "+"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start == ann_start] <- "ORF_annotated"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start < ann_start] <- "N_extension"
+orf_category[pos_strand_idx & orf_stop == ann_stop & orf_start > ann_start] <- "N_truncation"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_stop] <- "overl_uORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_start] <- "uORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop > ann_stop] <- "NC_extension"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_stop] <- "overl_dORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_stop & orf_stop > ann_stop] <- "dORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop < ann_stop] <- "nested_ORF"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop < ann_stop] <- "C_truncation"
+orf_category[pos_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop > ann_stop] <- "C_extension"
+
+# Negative strand
+neg_strand_idx <- orf_strand == "-"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start == ann_start] <- "ORF_annotated"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start > ann_start] <- "N_extension"
+orf_category[neg_strand_idx & orf_stop == ann_stop & orf_start < ann_start] <- "N_truncation"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_stop] <- "overl_uORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop > ann_start] <- "uORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start > ann_start & orf_stop < ann_stop] <- "NC_extension"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop < ann_stop] <- "overl_dORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_stop & orf_stop < ann_stop] <- "dORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start < ann_start & orf_stop > ann_stop] <- "nested_ORF"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop > ann_stop] <- "C_truncation"
+orf_category[neg_strand_idx & orf_stop != ann_stop & orf_start == ann_start & orf_stop < ann_stop] <- "C_extension"
+
+orf_category[lengths(cds_matches_grl_price) == 0] <- "novel"
+
+new_category_df_price <- data.frame(orf_id = names(orf_ranges_price),
+                              start_dif = abs(orf_start - ann_start),
+                              cdsRangeSimilarity = as.numeric(cdsRangeSimilarity),
+                              stop_same = ifelse(orf_stop == ann_stop,
+                                                 T,F),
+                              
+                              orf_category_new = orf_category,
+                              
+                              orf_cds = ifelse(cdsRangeSimilarity >= 0.9 & cdsRangeSimilarity <= 1.1,
+                                               T,
+                                               F)
+                              )
+```
+
+
+```{r}
+# Merging intORF re-reannotation for ORFquant and PRICE
+intorf_category_new <- rbind(new_category_df_oq, new_category_df_price)
+
+
+```
+
+# Compare
+
+```{r}
+my_intorfs <- intorf_harmonisation[which(intorf_harmonisation$intORF_stringent == "OOF"),]$orf_id
+
+only_jip <- intorf_harmonisation[which(intorf_harmonisation$intORF_stringent == "OOF" &
+                                           !(intorf_harmonisation$orf_id %in% intorfs_check$orf_id)) ,]
+
+only_jorge <- intorf_harmonisation[which(intorf_harmonisation$intORF_stringent == "IF" &
+                                           intorf_harmonisation$orf_id %in% intorfs_check$orf_id) ,]
+
+lt = list(my_intorfs = my_intorfs,
+          jorge_intorfs = intorfs_check$orf_id)
+
+m = ComplexHeatmap::make_comb_mat(lt)
+ComplexHeatmap::UpSet(m,top_annotation = ComplexHeatmap::upset_top_annotation(m, add_numbers = TRUE),
+    right_annotation = ComplexHeatmap::upset_right_annotation(m, add_numbers = TRUE))
+
+
+```

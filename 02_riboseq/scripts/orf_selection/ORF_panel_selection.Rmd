@@ -1,0 +1,226 @@
+---
+title: "RMS panel selection"
+author: "JD"
+date: "2024-03-15"
+output: html_document
+---
+
+This RMD selects for (nc)ORFs for the CRISPR screen. There are a couple of parameters we wanted to select on:
+
+* gene specificity to RMS
+* ORF expression
+* ORF call quality
+* gene co-regulation
+* RMS-important genes
+* proto-oncogenes
+
+#TODO:
+* Select 1 ORF per gene per type
+* Inspect all ORFs
+
+```{r libraries}
+library(magrittr)
+library(ggplot2)
+library(rtracklayer)
+```
+
+
+```{r}
+basedir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+rna_dir = paste(basedir,"01_rnaseq",
+                sep="/")
+savedir = paste(basedir,"results/quantification/figures",
+                sep="/")
+ribo_dir = paste(basedir,"02_riboseq",
+                 sep = "/")
+metadata_dir = paste(basedir,"documentation",
+                     sep="/")
+txome_gtf = paste(rna_dir,
+                  "analysis/rnaseq_pipeline/customannotation",
+                  "RMS_full_novel_filtered_corrected.sorted.gtf"
+                  ,sep ="/")
+tumor_type = "RMS"
+fp_target_genes = read.delim(file = paste(basedir, "documentation",
+                                          "FP_target_genes.txt", 
+                                          sep = "/"), 
+                             header = T)
+rds_loc = paste(basedir,"analysis","quantification","deseq2", sep = "/")
+```
+
+```{r}
+tx_df <- as.data.frame(rtracklayer::import(txome_gtf))
+
+protein_coding <- unique(tx_df[which(tx_df$gene_biotype == "protein_coding"),]$gene_id)
+lnc_rna <-unique(tx_df[which(tx_df$gene_biotype == "lncRNA"),]$gene_id)
+
+```
+
+```{r load data}
+fake_intorfs <- read.table(paste(ribo_dir,"results/orf_reannotation","jorge_psites_intorfs.csv",sep ="/"),sep = ",")
+
+rms_orf_df <- read.table(paste(ribo_dir,"results/orf_reannotation",
+                               "RMS_harmonised_ORF_table.csv", sep = "/"),
+                         sep = ",", header = T) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "nested_orf" & 
+                                                      orf_id %in% fake_intorfs$orf_id ~ "ORF_annotated",
+                                                    T ~ orf_category_new))
+  
+# Load txdb used to run ORFquant (same annotations etc)
+txdb_loc <- paste0(rna_dir,"/analysis/rnaseq_pipeline/customannotation/",
+                  tumor_type,"_container/",
+                  tumor_type,"_full_novel_filtered_corrected.gtf_TxDb")
+txdb <- AnnotationDbi::loadDb(txdb_loc)
+
+```
+
+```{r order based on expression}
+mat_cutoff <- read.table(paste(ribo_dir,
+                               "analysis/orf_quantification",
+                               "ORF_sample_sharing_table.csv",
+                               sep = "/"), 
+                         sep = ",", header = T, row.names = 1) %>%
+  tibble::rownames_to_column(var = "orf_id")
+mat_cutoff_summary <- read.table(paste(ribo_dir,
+                                       "analysis/orf_quantification",
+                                       "ORF_sample_sharing_summary.csv",
+                                       sep = "/"),
+                                 sep = ",", header = T, row.names = 1) %>%
+  tibble::rownames_to_column(var = "orf_id")
+```
+
+Not really interesting
+```{r explore similarity}
+
+# Load similarity matrix
+orfs_extended <- read.delim(paste(ribo_dir,
+                                  "results/orf_reannotation",
+                                  "RMS_merged_ORFquant_orfs_simScore.csv",
+                                  sep ="/"), sep = ",", row.names = 1) %>%
+  dplyr::mutate(similarity_score = as.numeric(similarity_score))
+
+# ORFquant annot
+orfs_extended %>%
+  dplyr::filter(ORF_category_Tx %in% c("ORF_annotated","overl_uORF",
+                                       "uORF","novel","dORF",
+                                       "nested_ORF","overl_dORF")) %>%
+ggplot(aes(x = ORF_category_Tx, y = similarity_score)) +
+  ggplot2::geom_boxplot()
+
+# New annot
+orfs_extended %>%
+  dplyr::left_join(check_anno[,c("ORF_id_tr","new_annot")], by = c("orf_id" = "ORF_id_tr")) %>%
+  dplyr::filter(new_annot %in% c("ORF_annotated","overl_uORF",
+                                       "uORF","novel","dORF",
+                                       "nested_ORF","overl_dORF")) %>%
+ggplot(aes(x = new_annot, y = similarity_score)) +
+  ggplot2::geom_boxplot()
+
+# Not quantified
+
+not_quant_orfs <- orfs_tx_df[which(!(orfs_tx_df$ORF_id_tr %in% orfs_extended$orf_id)),] %>%
+  dplyr::left_join(check_anno[,c("ORF_id_tr","new_annot")])
+
+table(not_quant_orfs$ORF_category_Tx)
+table(not_quant_orfs$new_annot)
+
+```
+
+# RMS specificity
+
+ORFs derived from RMS-specific genes
+
+```{r}
+
+rms_spec_orfs <- rms_orf_df %>% 
+  dplyr::filter(translated == T &
+                RMS_enriched == T &
+                ppm_sum > 99)
+
+table(rms_spec_orfs$orf_category_new)
+table(rms_spec_orfs$number_fp_samples > rms_spec_orfs$number_fn_samples)
+
+length(unique(rms_spec_orfs$gene_id))
+```
+
+# ncORF expression
+
+ncORF with very high FP-RMS patient / tumoroid expression
+
+```{r}
+
+# Ubiqutiously expressed ncORFs
+ubi_expr_orf <- mat_cutoff_summary %>%
+                  dplyr::filter(number_samples > 19 & 
+                                number_fp_samples > 9 &
+                                number_patient_samples > 4) %>%
+                  dplyr::pull(orf_id)
+
+high_nc_orf <- rms_orf_df %>%
+  dplyr::filter(orf_id %in% ubi_expr_orf &
+                orf_category_new %in% c("dORF","nested_ORF","novel",
+                                        "uORF","overl_dORF","overl_uORF") &
+                  ppm_mean > 99 & dplyr::case_when(orf_category_new == "nested_ORF" &
+                                                    similarity_score > 25 ~ F,
+                                                    T ~ T)
+  )
+
+length(unique(high_nc_orf$gene_id))
+
+```
+
+# ORF quality
+
+```{r}
+
+
+
+```
+
+# ORF functional predictions
+
+```{r}
+
+
+
+```
+
+# oncogenes with ncORF
+
+Taken from Michaels and Jeff's paper of interesting genes based on figure 1B
+and supplemental figure 5,6,7.
+
+FAKES:
+ENST00000636072_16_177
+ENST00000636794_12_491
+ENST00000532781_48_563
+
+```{r}
+
+rms_genes_of_interest <- c("PAX3","PAX7","FOXO1","WWTR1","NRAS","FGFR4",
+                           "CTNNB1","TP53","MYOD1","KRAS","ATR","RAF1",
+                           "PIK3CA","BCOR","FBXW7","ARID1A","MYCN","NTRK1",
+                           "MDM2","IGF1R","MYCL","CDK4","CDKN2A","NF1","MYOG",
+                           "MYF6","EGR1","KLF4","HEY1","NOTCH3","TTN","CKB",
+                           "TOP2A","MKI67","CDK1")
+
+onc_orfs <- rms_orf_df %>% 
+  dplyr::filter(gene_name %in% rms_genes_of_interest &
+                orf_category_new %in% c("dORF","nested_ORF","novel",
+                                        "overl_dORF","overl_uORF","uORF") &
+                translated == T)
+
+length(unique(onc_orfs$gene_id))
+
+```
+
+# FP overexpression
+
+genes over-expressed in a induced fusion protein experiment but they are not here :((
+
+```{r}
+
+
+
+```
+
+# FP correlation

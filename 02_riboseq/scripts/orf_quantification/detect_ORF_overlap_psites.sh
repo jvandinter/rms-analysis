@@ -15,7 +15,7 @@ scriptdir="/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/script
 riboseqc_parent_dir="${outdir}/RiboseQC"
 
 # Set input variables
-orf_gtf="/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/ORFquant/RMS_merged_psites/RMS_merged_psites_Detected_ORFs.gtf"  # GTF file containing ORF definitions (eg CDS regions)
+orf_gtf="/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/ORFquant/RMS_merged_psites/RMS_merged_psites_Detected_ORFs_fixed.gtf"  # GTF file containing ORF definitions (eg CDS regions)
 is_anno="no"  # Is orf_GTF an annotation file with incomplete ORFs? (i.e. from Ensembl) [yes/no]
 out_dir="/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/p_site_quantification"  # Directory to output generated files
 mkdir -p ${out_dir}
