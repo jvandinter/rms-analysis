@@ -34,6 +34,17 @@ novel_genes <- gtf_df %>%
   dplyr::filter(grepl("MSTRG",gene_id)) %>%
   dplyr::pull(gene_id) %>%
   unique(.)
+```
+
+
+```{r do not run}
+# Get a list of all ensembl gene IDs
+cds_genes <- gtf_df %>%
+  dplyr::filter(!(grepl("MSTRG",gene_id))) %>%
+  dplyr::select(gene_id) %>%
+  distinct() %>%
+  dplyr::pull(gene_id)
+write.table(cds_genes, file = "/hpc/pmc_vanheesch/projects/jvandinter/cds_genes.txt", quote = F, row.names = F)
 
 ```
 
@@ -221,6 +232,35 @@ create_enrichment_table <- function(combined_results_lfc, # LFC (column) per com
   
   return(df)
 }
+
+create_binary_table <- function(combined_results_lfc, # LFC (column) per comparison for each gene (rows)
+                              combined_results_pval, # LFC (row) per comparison for each gene (rows)
+                              pval_novel_cutoff = 0.001, # P-adjusted cut-off for novel genes
+                              pval_anno_cutoff = 0.0001, # P-adjusted for annotated genes
+                              lfc_cutoff = 1, # LFC cut-off to consider as minimum significant
+                              non_tumor_columns, # column indices or vector of column names for enrichment
+                              tumor_columns # column indices or vector of column names for specificity
+                              ) 
+  {
+  # Log2foldchange
+  lfc = as.matrix(combined_results_lfc)
+  lfc_novel = lfc[grepl("MSTRG",rownames(lfc)),]
+  lfc_anno = lfc[grepl("ENSG",rownames(lfc)),]
+  
+  # Adjusted P-value
+  pval = as.matrix(combined_results_pval)
+  pval_novel = pval[grepl("MSTRG",rownames(pval)),]
+  pval_anno = pval[grepl("ENSG",rownames(pval)),]
+  
+  binary_novel = ifelse(lfc_novel > lfc_cutoff & pval_novel < pval_novel_cutoff,1,0)
+  binary_anno = ifelse(lfc_anno > lfc_cutoff & pval_anno < pval_anno_cutoff,1,0)
+  
+  mat = rbind(binary_anno,binary_novel)
+  non_tumor = rowSums(mat[,non_tumor_columns])
+  tumor = rowSums(mat[,tumor_columns])
+  mat = cbind(mat,tumor,non_tumor)
+  return(mat)
+}
 ```
 
 # Output
@@ -259,6 +299,38 @@ c(1:2,6:10,13:15,17,19,21,23,24,26,28,29,31:33,35,37,40:48,53:56)
 
 tumor samples:
 c(3,4,5,16,18,34,36,38,49,57)
+
+### binary table
+
+```{r}
+non_tumor_index = c(1:2,6:10,13:15,17,19,21,23,24,26,28,29,31:33,35,37,40:48,53:56)
+tumor_index = c(3,4,5,16,18,34,36,38,49,57)
+
+fp_binary_table <- create_binary_table(combined_results_lfc = fp_lfc,
+                                       combined_results_pval = fp_pval,
+                                       non_tumor_columns = non_tumor_index,
+                                       tumor_columns = tumor_index)
+
+fn_binary_table <- create_binary_table(combined_results_lfc = fn_lfc,
+                                       combined_results_pval = fn_pval,
+                                       non_tumor_columns = non_tumor_index,
+                                       tumor_columns = tumor_index)
+
+rms_binary_table <- create_binary_table(combined_results_lfc = rms_lfc,
+                                       combined_results_pval = rms_pval,
+                                       non_tumor_columns = non_tumor_index,
+                                       tumor_columns = tumor_index)
+
+write.table(fp_binary_table, file = paste(rna_dir,"results/quantification","RMS-FP_binary_matrix.csv",sep ="/"), 
+            sep = ",", quote = F, row.names = F)
+write.table(fn_binary_table, file = paste(rna_dir,"results/quantification","RMS-FN_binary_matrix.csv",sep ="/"), 
+            sep = ",", quote = F, row.names = F)
+write.table(rms_binary_table, file = paste(rna_dir,"results/quantification","RMS_binary_matrix.csv",sep ="/"), 
+            sep = ",", quote = F, row.names = F)
+
+```
+
+### All Table
 
 ```{r table generation}
 non_tumor_index = c(1:2,6:10,13:15,17,19,21,23,24,26,28,29,31:33,35,37,40:48,53:56)

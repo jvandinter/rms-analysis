@@ -2,7 +2,7 @@
 
 # $4 = output .xls file -> 1 big table all HLA types after eachother
 
-processed_fasta="${outdir}/netMHCpan_${run}/peptides.fasta"
+processed_fasta="${outdir}/netMHCpan/peptides.fasta"
 temp_fasta="${project_data_folder}/temp_${run}.fasta"
 name_table="${project_data_folder}/temp_${run}_names.tsv"
 alleles=(HLA-A01:01 HLA-A02:01 HLA-A03:01 HLA-A24:02 HLA-A26:01 HLA-B07:02 HLA-B08:01 HLA-B27:05 HLA-B39:01 HLA-B40:01 HLA-B58:01 HLA-B15:01)

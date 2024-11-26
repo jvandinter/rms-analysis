@@ -4,11 +4,9 @@
 #
 # Authors: J.T.vandinter-3@prinsesmaximacentrum.nl
 # Authors: D.A.Hofman-3@prinsesmaximacentrum.nl
-# Date: 15-11-2023
+# Date: 23-06-2023
 #
 ######################################################################
-
-set -euo pipefail
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]
@@ -49,7 +47,7 @@ fi
 source $CONFIG
 
 # Load general functions
-source ${scriptdir}/chip_functions.sh
+source ${scriptdir}/te_functions.sh
 
 # Create a unique prefix for the names for this run_id of the pipeline
 # This makes sure that run_ids can be identified
@@ -69,7 +67,7 @@ printf "%s\n" "${r1_files[@]}" > ${project_folder}/documentation/r1_files.txt
 printf "%s\n" "${sample_ids[@]}" > ${project_folder}/documentation/sample_ids.txt
 
 # Create output directories
-mkdir -p ${project_folder}/log/${run_id}/{trimgalore,bwa,picard,macs} 
+mkdir -p ${project_folder}/log/${run_id}/{trimgalore,salmon} 
 echo "`date` using run ID: ${run_id}"
 mkdir -p ${outdir}
 
@@ -78,9 +76,9 @@ if [[ ${#samples[@]} -eq 0 ]]; then
   fatal "no samples found in ./raw/ or file containing fastq file locations not present"
 fi
 
-info "samples: n = ${#samples[@]}"
+echo "samples: n = ${#samples[@]}"
 for sample in ${samples[@]}; do
-  info "    $sample"
+  echo "    $sample"
 done
 
 ################################################################################
@@ -89,10 +87,36 @@ done
 #
 ################################################################################
 
-echo -e "\n ====== `date` ChIP peak calling pipeline ====== \n"
+echo -e "\n ====== `date` Delta TE Pipeline ====== \n"
+
+echo -e "\n`date` Building index ..."
+echo -e "====================================================================================== \n"
+
+# 1. Salmon Index
+
+index_jobid=()
+
+index_jobid+=($(sbatch --parsable \
+  --mem=120G \
+  --cpus-per-task=2 \
+  --time=24:00:00 \
+  --job-name=${run_id}.index \
+  --output=${project_folder}/log/${run_id}/index.out \
+  --export=ALL \
+  ${scriptdir}/te_salmon_index.sh
+))
+
+if [[ ${#index_jobid[@]} -eq 0 ]]; then
+  fatal "TrimGalore job not submitted successfully, trim_jobid array is empty"
+fi
+
+echo "Salmon index jobid: ${index_jobid}"
 
 echo -e "\n`date` Filtering and trimming ..."
 echo -e "====================================================================================== \n"
+
+# 1. TRIMGALORE. Parallel start of all trimgalore jobs to filter for quality
+#                with CUTADAPT and output quality reports with FASTQC
 
 trim_jobid=()
 
@@ -103,73 +127,53 @@ trim_jobid+=($(sbatch --parsable \
   --array 1-${#samples[@]}%${simul_array_runs} \
   --job-name=${run_id}.trimgalore \
   --output=${project_folder}/log/${run_id}/trimgalore/%A_%a.out \
+  --dependency=afterok:${index_jobid} \
   --export=ALL \
-  ${scriptdir}/chip_trimgalore.sh 
+  ${scriptdir}/te_trimgalore.sh 
 ))
 
-if [[ ${#trim_jobid[@]} -eq 0 ]]; then
-  fatal "TrimGalore job not submitted successfully, trim_jobid array is empty"
-fi
+echo "trimgalore jobid: ${trim_jobid}"
 
-info "trimgalore jobid: ${trim_jobid}"
-
-echo -e "\n`date` Align reads to genome with bwa mem2 ..."
+echo -e "\n`date` Removing contaminants ..."
 echo -e "====================================================================================== \n"
 
-bwa_jobid=()
+# 2. BOWTIE2. Use combination of tRNA, rRNA, snRNA, snoRNA, mtDNA fastas to
+#             remove those contaminants from RIBO-seq data. Outputs QC stats
+#             to a file per contaminant group.
 
-bwa_jobid+=($(sbatch --parsable \
-  --mem=80G \
-  --cpus-per-task=6 \
+contaminant_jobid+=($(sbatch --parsable \
+  --mem=8G \
+  --cpus-per-task=12 \
   --time=24:00:00 \
+  --gres=tmpspace:100G \
   --array 1-${#samples[@]}%${simul_array_runs} \
-  --job-name=${run_id}.bwa \
-  --output=${project_folder}/log/${run_id}/bwa/%A_%a.out \
+  --job-name=${run_id}.contaminants \
+  --output=${project_folder}/log/${run_id}/bowtie2/%A_%a.out \
   --dependency=aftercorr:${trim_jobid} \
   --export=ALL \
-  ${scriptdir}/chip_bwa.sh
-  
+  ${scriptdir}/te_remove_contaminants.sh
 ))
 
-info "BWA mem2 jobid: ${bwa_jobid}"
-
-echo -e "\n`date` Remove duplicates with PICARD ..."
+echo -e "\n`date` Quantification ..."
 echo -e "====================================================================================== \n"
 
-picard_jobid=()
+# 2. Salmon. Quantifies filtered FASTQ against 
 
-picard_jobid+=($(sbatch --parsable \
-  --mem=24G \
-  --cpus-per-task=1 \
-  --time=24:00:00 \
-  --gres=tmpspace:25G \
+quant_jobid=()
+
+quant_jobid+=($(sbatch --parsable \
+  --mem=48G \
+  --cpus-per-task=6 \
+  --time=12:00:00 \
+  --gres=tmpspace:50G \
   --array 1-${#samples[@]}%${simul_array_runs} \
-  --job-name=${run_id}.picard \
-  --output=${project_folder}/log/${run_id}/picard/%A_%a.out \
-  --dependency=aftercorr:${bwa_jobid} \
+  --job-name=${run_id}.salmon_quant \
+  --output=${project_folder}/log/${run_id}/salmon/%A_%a.out \
+  --dependency=aftercorr:${contaminant_jobid} \
   --export=ALL \
-  ${scriptdir}/chip_picard.sh
+  ${scriptdir}/te_salmon_quant.sh
 ))
 
-info "PICARD jobid: ${picard_jobid}"
-
-echo -e "\n`date` Call peaks with MACS ..."
-echo -e "====================================================================================== \n"
-
-macs_jobid=()
-
-macs_jobid+=($(sbatch --parsable \
-  --mem=12G \
-  --cpus-per-task=1 \
-  --time=144:00:00 \
-  --gres=tmpspace:10G \
-  --job-name=${run_id}.macs \
-  --output=${project_folder}/log/${run_id}/macs/macs.out \
-  --dependency=afterok:${picard_jobid} \
-  --export=ALL \
-  ${scriptdir}/chip_macs.sh
-))
-
-info "MACS jobid: ${macs_jobid}"
+echo "quantification jobid: ${quant_jobid}"
 
 echo -e "\n ====== `date` Started all jobs! ====== \n"

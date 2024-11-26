@@ -1,0 +1,58 @@
+---
+title: "ChIP-seq Peak Merging"
+author: "JD"
+date: "2023-12-07"
+output: html_document
+---
+
+```{r library}
+library(rtracklayer)
+library(magrittr)
+library(GenomicRanges)
+library(dplyr)
+```
+
+```{r parameters}
+basedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/05_chipseq"
+
+peakdir = paste(basedir,"analysis","macs3", sep = "/")
+
+savedir = paste(basedir,"results","merged_peaks",sep = "/")
+
+chip_meta = read.delim("/hpc/pmc_vanheesch/projects/Jip/rms_analysis/documentation/PRJNA326873_meta.txt", sep = ",") %>% dplyr::select(Run,LibrarySelection,cell_line,source_name,enrichment_target)
+```
+
+```{r load peaks}
+narrowpeak_list <- list.files(path = peakdir, pattern = ".*\\.narrowPeak", recursive = T, full.names = T)
+
+tumor_FP_H3K27ac <- grep("RMS238|RMS209|NCI0082", narrowpeak_list, value = T)
+tumor_FN_H3K27ac <- grep("NCI0075|RMS206|RMS237|RMS008", narrowpeak_list, value = T)
+
+cell_FP_H3K27ac <- grep("RH3|SCMC|RH4|RH5", narrowpeak_list, value = T)
+cell_FP_H3K27ac <-  grep("H3K27ac", cell_FP_H3K27ac, value = T)
+cell_FN_H3K27ac <- grep("CTR|RD", narrowpeak_list, value = T)
+cell_FN_H3K27ac <-  grep("H3K27ac", cell_FN_H3K27ac, value = T)
+
+combine_peaks <- list(tumor_FP_H3K27ac,
+                      tumor_FN_H3K27ac,
+                      cell_FP_H3K27ac,
+                      cell_FN_H3K27ac)
+
+filenames <- list("consensus_tumor_FP_H3K27ac",
+                  "consensus_tumor_FN_H3K27ac",
+                  "consensus_cell_FP_H3K27ac",
+                  "consensus_cell_FN_H3K27ac")
+
+for(i in 1:length(combine_peaks)) {
+  filename = paste(savedir, paste0(filenames[[i]],".bed"), sep = "/")
+  print(filename)
+  gr = GRangesList(lapply(combine_peaks[[i]], import)) %>%
+  GenomicRanges::coverage(.) %>%
+  IRanges::slice(. , lower = 2, rangesOnly = T) %>%
+  GenomicRanges::reduce(. , min.gapwidth = 31) %>%
+  GenomicRanges::GRanges(.) %>%
+  rtracklayer::export(object = . , con = filename)
+}
+
+```
+

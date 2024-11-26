@@ -5,12 +5,11 @@ set -uo pipefail
 cpu=$((${SLURM_CPUS_PER_TASK} * 2))
 
 # Load files
-mapfile -t bam_files < ${project_folder}/documentation/bam_files.txt
 mapfile -t sample_ids < ${project_folder}/documentation/sample_ids.txt
-bam_file="${bam_files[$((SLURM_ARRAY_TASK_ID-1))]}"
 
 # Set names
 sample_id="${sample_ids[$((SLURM_ARRAY_TASK_ID-1))]}"
+bam_file="${outdir}/star/${sample_id}/${sample_id}.Aligned.sortedByCoord.out.bam"
 bam_filename=$(basename ${bam_file})
 
 # Create output dirs

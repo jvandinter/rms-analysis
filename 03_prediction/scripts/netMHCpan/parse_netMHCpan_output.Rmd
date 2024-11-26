@@ -1,0 +1,97 @@
+---
+title: "Epitope check"
+author: "JD"
+date: "2024-08-08"
+output: html_document
+---
+
+```{r libraries}
+
+library(dplyr)
+library(purrr)
+library(magrittr)
+library(readr)
+
+```
+
+```{r parameters}
+#home
+prediction_dir <- "/Users/jipvandinter/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/03_prediction/"
+#prediction_dir <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/03_prediction/"
+
+```
+
+```{r}
+
+netmhcpan_files <- list.files(path = paste(prediction_dir,"analysis/netMHCpan", sep = "/"), full.names = T)
+
+load_tsv <- function(file) {
+  
+  file_parts <- stringr::str_extract_all(basename(file), "[^_]+")[[1]]
+  hla <- stringr::str_replace_all(file_parts[2], "/", ":")
+  length <- file_parts[3]
+  readr::read_tsv(file, skip = 1) %>%
+    dplyr::mutate(hla = hla, 
+                  length = length)
+}
+
+# Load the files and combine the resulting data frames
+df <- netmhcpan_files %>%
+  purrr::map(load_tsv) %>%
+  dplyr::bind_rows()
+
+# Annotate significant binders
+df_anno <- df %>%
+  dplyr::mutate(binder = ifelse(EL_Rank < 0.02,"sig_binding","no_binding"))
+
+df_sig <- df_anno %>% dplyr::filter(binder == "sig_binding")
+
+# Number of binders per HLA type
+table(df_anno$binder, df_anno$hla)
+
+# Matrix of binders per HLA type and per peptide length
+table(df_sig$hla, df_sig$length)
+
+```
+
+Link transcript ID to ORF ID
+
+```{r}
+orf_id <- read.delim("/Users/jipvandinter/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/results/orf_reannotation/RMS_harmonised_ORF_table.csv", sep = ",")
+
+t <- orf_id %>% 
+                     dplyr::select(orf_id,transcript_id,Protein) %>%
+                     dplyr::mutate(ID = stringr::str_sub(string = orf_id, end = 15),
+                                   ID = gsub("\\.","_",ID))
+
+# This leads to a 5 Gb file
+df_anno_orf_id <- df_anno %>% dplyr::mutate(length = as.integer(length)
+                                        ) %>%
+  dplyr::left_join(orf_id %>% 
+                     dplyr::select(orf_id,transcript_id,Protein) %>%
+                     dplyr::mutate(ID = stringr::str_sub(string = orf_id, end = 15),
+                                   ID = gsub("\\.","_",ID)),
+                                           by = c("ID") 
+                     ) %>%
+  dplyr::mutate(peptide_match = stringr::str_sub(start = Pos + 1,
+                                                 end = Pos + length,
+                                                 string = Protein)) %>%
+  dplyr::filter(peptide_match == Peptide)
+
+# This is only 1 Mb
+df_sig_orf_id <- df_sig %>% dplyr::mutate(length = as.integer(length)
+                                        ) %>%
+  dplyr::left_join(orf_id %>% 
+                     dplyr::select(orf_id,transcript_id,Protein) %>%
+                     dplyr::mutate(ID = stringr::str_sub(string = orf_id, end = 15),
+                                   ID = gsub("\\.","_",ID)),
+                                           by = c("ID") 
+                     ) %>%
+  dplyr::mutate(peptide_match = stringr::str_sub(start = Pos + 1,
+                                                 end = Pos + length,
+                                                 string = Protein)) %>%
+  dplyr::filter(peptide_match == Peptide)
+
+write.table(df_sig_orf_id, file = paste("/Users/jipvandinter/surfdrive/Projects/rms_paper/data/prediction","netMHCpan_sig_binders.csv", sep = "/"),sep = ",", quote = F, row.names = F)
+
+```

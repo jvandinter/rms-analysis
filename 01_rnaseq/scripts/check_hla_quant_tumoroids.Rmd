@@ -1,0 +1,129 @@
+---
+title: "HLA counts"
+author: "JD"
+date: "2024-08-14"
+output: html_document
+---
+
+```{r libraries}
+suppressPackageStartupMessages({
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(cowplot)
+library(ggpubr)
+library(DESeq2)
+library(factoextra)
+library(ComplexHeatmap)
+})
+```
+
+# Parameters
+
+```{r parameters}
+
+basedir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+rna_dir = paste(basedir,"01_rnaseq",sep = "/")
+ribo_dir = paste(basedir,"02_riboseq", sep = "/")
+save_dir = paste(basedir,"poster_plots/figures",sep="/")
+metadata_dir = paste(rna_dir,"documentation",sep="/")
+txome_gtf = paste(rna_dir,
+                  "analysis/rnaseq_pipeline/customannotation",
+                  "RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")
+tumor_type = "RMS"
+rds_loc = paste(rna_dir,"analysis","quantification", sep = "/")
+
+```
+
+# Tumoroids
+
+```{r}
+
+dds_t <- readRDS("/hpc/pmc_vanheesch/projects/jvandinter/custom_transcriptomes/20221020_JD_quant_tumor_cohorts/analysis/RMS/results/RMS_DESEQ_tumoroid_subtype.RDS")
+
+meta_t <- read.delim(paste(basedir,"documentation",
+                            "tumoroids_rna_ids.txt",
+                            sep = "/")) %>%
+  dplyr::distinct()
+
+vsd_t <- DESeq2::varianceStabilizingTransformation(dds_t)
+plot <- plotPCA(vsd_t, intgroup = c("condition","sample_id"), returnData = T) %>%
+  dplyr::rename(sequence_id = sample_id) %>%
+  dplyr::left_join(meta, by = "sequence_id") %>%
+  dplyr::mutate(tumoroid = gsub("-.","",sample_id) )
+
+ggplot(plot, aes(x = PC1,y = PC2, col = tumoroid)) + geom_point()
+
+```
+
+"HLA-A"="ENSG00000206503"
+"HLA-B"="ENSG00000234745"
+"HLA-C"="ENSG00000204525"
+"HLA-E"="ENSG00000204592"
+"HLA-F"="ENSG00000204642"
+"HLA-G"="ENSG00000204632"
+
+```{r}
+
+picked_gene <- c("HLA-G"="ENSG00000204632")
+
+plot_counts <- DESeq2::plotCounts(dds = dds_t,
+                                  gene = picked_gene,
+                                  intgroup = c("condition","sample_id"),
+                                  normalized=T,
+                                  returnData = T) %>%
+  dplyr::rename(sequence_id = sample_id) %>%
+  dplyr::left_join(meta_t, by = "sequence_id") %>%
+  dplyr::mutate(tumoroid = gsub("-.","",sample_id) )
+
+ggplot(plot_counts, aes(x = tumoroid, y = count, col = condition)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.33,size =2) +
+  labs(title = paste(names(picked_gene)), y = "norm count") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme_classic(base_size = 14)
+
+```
+
+# Patients
+
+```{r}
+
+dds_p <- readRDS(paste(rna_dir,
+                    "analysis/quantification",
+                    "RMS_all_cohorts_for_plotting.RDS",
+                    sep = "/"))
+
+meta_p <- rbind(read.delim(paste(rna_dir,"documentation","RMS_fn.txt", sep = "/"), sep = ";"),
+                 read.delim(paste(rna_dir,"documentation","RMS_fp.txt", sep = "/"), sep = ";"))
+
+
+
+```
+
+"HLA-A"="ENSG00000206503"
+"HLA-B"="ENSG00000234745"
+"HLA-C"="ENSG00000204525"
+"HLA-E"="ENSG00000204592"
+"HLA-F"="ENSG00000204642"
+"HLA-G"="ENSG00000204632"
+
+```{r plot}
+
+picked_gene <- c("HLA-G"="ENSG00000204632")
+
+plot_counts <- DESeq2::plotCounts(dds = dds_p,
+                                  gene = picked_gene,
+                                  intgroup = c("sample_id"),
+                                  normalized=T,
+                                  returnData = T) %>%
+  dplyr::right_join(meta_p, by = "sample_id")
+
+ggplot(plot_counts, aes(x = condition, y = count, col = condition)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.33,size =2) +
+  labs(title = paste(names(picked_gene)), y = "norm count") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme_classic(base_size = 14)
+
+```

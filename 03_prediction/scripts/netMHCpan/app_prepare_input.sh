@@ -16,14 +16,14 @@ allele="deprecated"
 source ${scriptdir}/netMHCpan/python_env/bin/activate
 
 # Create output directory
-mkdir "${outdir}/netMHCpan_${run}" || { echo "Error: Failed to create the output directory."; exit 1; }
+mkdir "${outdir}/netMHCpan" || { echo "Error: Failed to create the output directory."; exit 1; }
 
-cd "${outdir}/netMHCpan_${run}"
+cd "${outdir}/netMHCpan"
 
 # Convert the input to the input required by netMHCpan
 apptainer exec -B "/hpc:/hpc" --env LC_CTYPE="en_US.UTF-8" ${apptainer_dir}/blast_parser_python-2.0.sif \
     python3 ${scriptdir}/netMHCpan/app_prepare_input.py ${input_fasta} \
-    "${outdir}/netMHCpan_${run}/peptides.fasta" ${protdir} ${allele}
+    "${outdir}/netMHCpan/peptides.fasta" ${protdir} ${allele}
 
 # Show end time
 end=$(date +"%d-%m-%Y %T")

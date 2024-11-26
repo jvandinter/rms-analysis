@@ -10,14 +10,23 @@ library(magrittr)
 library(dplyr)
 library(rtracklayer)
 library(GenomicRanges)
+library(GenomicFeatures)
+library(AnnotationDbi)
 ```
 
 ```{r parameters}
-basedir <- "/hpc/pmc_vanheesch/projects/Jip/rms_analysis"
+basedir <- "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
 bed <- paste(basedir,"05_chipseq", "analysis","macs2","RH4_PAX3-FOXO1_summits.bed", sep = "/")
-gtf <- paste(basedir,"01_rnaseq","analysis", "rnaseq_pipeline","customannotation" ,
+gtf <- paste(basedir,"01_rnaseq","analysis", "rnaseq_pipeline","customannotation",
              "RMS_full_novel_filtered_corrected.sorted.gtf" , sep = "/")
 fp_target_genes = read.delim(file = paste(basedir, "documentation","FP_target_genes.txt", sep = "/"), header = T)
+txdb <- paste(basedir,"01_rnaseq","analysis", "rnaseq_pipeline","customannotation" , "RMS_container",
+             "RMS_full_novel_filtered_corrected.gtf_TxDb" , sep = "/")
+
+samplefiles <- list.files(path = paste(basedir,"05_chipseq","analysis","macs3", sep ="/"), 
+                          recursive = T,
+                          full.names = T,
+                          pattern = "*.narrowPeak")
 ```
 
 ```{r load FP enriched genes}
@@ -44,13 +53,40 @@ combined_pass_canon <- read.delim(paste(basedir,"01_rnaseq","results","quantific
                             sep = ";", header = T)
 
 combined_enr_genes <- c(combined_pass_canon[which(combined_pass_canon$pass == T & combined_pass_canon$selected == T),]$gene_id, combined_pass_novel[which(combined_pass_novel$pass == T),]$gene_id)
-fn_enr_genes <- c(fn_pass_canon[which(fn_pass_canon$pass == T & fn_pass_canon$selected == T),]$gene_id,
-                  fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id)
-fp_enr_genes <- c(fp_pass_canon[which(fp_pass_canon$pass == T & fp_pass_canon$selected == T),]$gene_id,
-                  fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id)
 
-picked_fp_enr_genes <- c(fp_enr_genes,combined_enr_genes)
-picked_fp_enr_genes <- picked_fp_enr_genes[!(picked_fp_enr_genes %in% fn_enr_genes)]
+```
+
+```{r}
+# fn_enr_genes <- c(fn_pass_canon[which(fn_pass_canon$pass == T & fn_pass_canon$selected == T),]$gene_id,
+#                   fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id)
+# fp_enr_genes <- c(fp_pass_canon[which(fp_pass_canon$pass == T & fp_pass_canon$selected == T),]$gene_id,
+#                   fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id)
+# 
+# picked_fp_enr_genes <- c(fp_enr_genes,combined_enr_genes)
+# picked_fp_enr_genes <- picked_fp_enr_genes[!(picked_fp_enr_genes %in% fn_enr_genes)]
+
+```
+
+```{r create bed subsets}
+fn_novel <- fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id
+
+fn_anno <- fn_pass_canon[which(fn_pass_canon$pass == T & fn_pass_canon$selected == T),]$gene_id
+
+fp_novel <- fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id
+
+fp_anno <- fp_pass_canon[which(fp_pass_canon$pass == T & fp_pass_canon$selected == T),]$gene_id
+
+combined_novel <- combined_pass_novel[which(combined_pass_novel$pass == T & 
+                                              !(combined_pass_novel$gene_id %in% c(fn_novel,fp_novel))),]$gene_id  
+
+combined_anno <- combined_pass_canon[which(combined_pass_canon$pass == T & 
+                                             combined_pass_canon$selected == T & 
+                                             !(combined_pass_canon$gene_id %in% c(fn_anno,fp_anno))),]$gene_id
+
+rms_enr_list <- list(fp_novel,fp_anno,fn_novel,fn_anno,combined_novel,combined_anno)
+names(rms_enr_list) <- c("RMS_FP_novel_enriched","RMS_FP_annotated_enriched",
+                           "RMS_FN_novel_enriched","RMS_FN_annotated_enriched",
+                           "RMS_combined_novel_enriched","RMS_combined_annotated_enriched")
 
 ```
 
@@ -60,8 +96,160 @@ rms_gtf <- rtracklayer::import.gff(gtf)
 rms_df <- as.data.frame(rms_gtf) %>%
   dplyr::filter(type == "transcript" & gene_biotype %in% c("protein_coding","lncRNA","stringtie"))
 
-fp_peaks <- rtracklayer::import.bed(bed)
+rms_df_list <- lapply(rms_enr_list, function(x) {
+  df = rms_df %>%
+    dplyr::filter(gene_id %in% x) %>%
+    dplyr::select(gene_id,transcript_id)
+  return(df)
+})
+
 ```
+
+```{r}
+for( i in 1:length(rms_enr_list)) {
+  gtf = rms_gtf[which(rms_gtf$gene_id %in% rms_enr_list[[i]]),]
+  name = names(rms_enr_list)[i]
+  print(paste("exporting GTF: " , name))
+  rtracklayer::export.gff(gtf, con = paste(basedir,"05_chipseq","analysis","deeptools","gtfs",paste0(name,".gtf"), sep = "/"))
+}
+
+```
+
+```{r check function}
+
+getGene <- function(TxDb, by="gene") {
+
+    by <- match.arg(by, c("gene", "transcript"))
+
+            features <- GenomicFeatures::genes(TxDb)
+            assign("Genes", features)
+
+
+    return(features)
+}
+
+test <- getGene(TxDb = txdb_dbi)
+```
+
+```{r promoter function}
+getPromoters <- function(TxDb=NULL,
+                         upstream=1000,
+                         downstream=1000,
+                         enrichment_list=NULL,
+                         by = "gene") {
+
+    by <- match.arg(by, c("gene", "transcript"))
+    
+    TxDb <- loadTxDb(TxDb)
+    .ChIPseekerEnv(TxDb)
+    ChIPseekerEnv <- get("ChIPseekerEnv", envir=.GlobalEnv)
+
+    if ( exists("upstream", envir=ChIPseekerEnv, inherits=FALSE) &&
+        exists("downstream", envir=ChIPseekerEnv, inherits=FALSE) ) {
+        us <- get("upstream", envir=ChIPseekerEnv)
+        ds <- get("downstream", envir=ChIPseekerEnv)
+        if (us == upstream && ds == downstream &&
+            exists("promoters", envir=ChIPseekerEnv, inherits=FALSE) ){
+            promoters <- get("promoters", envir=ChIPseekerEnv)
+            return(promoters)
+        }
+    }
+
+    Transcripts <- ChIPseeker::getGene(TxDb, by)
+    
+    ## get start position based on strand
+    tss <- ifelse(strand(Transcripts) == "+", start(Transcripts), end(Transcripts))
+    promoters <- GRanges(seqnames=seqnames(Transcripts),
+                         ranges=IRanges(tss-upstream, tss+downstream),
+                         strand=strand(Transcripts))
+    promoters <- unique(promoters)
+
+    assign("promoters", promoters, envir=ChIPseekerEnv)
+    assign("upstream", upstream, envir=ChIPseekerEnv)
+    assign("downstream", downstream, envir=ChIPseekerEnv)
+    
+    return(promoters)
+}
+```
+
+```{r get promoter sequences}
+txdb_dbi <- AnnotationDbi::loadDb(txdb)
+chr_loc <-  transcriptsBy(txdb_dbi, by = "gene")
+promoter <- ChIPseeker::getPromoters(txdb_dbi, upstream = 1000, downstream = 1000)
+promoters <- GenomicFeatures::promoters(x = txdb_dbi, upstream = 2000, downstream = 2000)
+
+# Only keep FP-RMS genes in there
+# Merge based on transcript IDs
+promoter_fp <- promoters[which(promoters$tx_name %in% rms_fp_df$transcript_id),]
+
+# Extract gene IDs and add them to the metadata column of GRanges
+gr <- promoter_fp %>%
+  dplyr::select() %>%
+  as("GRanges")
+
+```
+
+```{r check with single narrowpeak first}
+tagMatrix <- ChIPseeker::getTagMatrix(peak = samplefiles[15], 
+                                      TxDb = txdb_dbi, 
+                                      windows = promoter,
+                                      upstream = 1000, 
+                                      downstream = 1000)
+
+ChIPseeker::tagHeatmap(tagMatrix)
+
+tagMatrix <- t(apply(tagMatrix, 1, function(x) x/max(x)))
+ii <- order(rowSums(tagMatrix))
+    tagMatrix <- tagMatrix[ii,]
+    cols <- colorRampPalette(c("white","red"))(200)
+    if (is.null(xlim)) {
+        xlim <- 1:ncol(tagMatrix)
+    } else if (length(xlim) == 2) {
+        xlim <- seq(xlim[1], xlim[2])
+    }
+    
+image(x=xlim, y=1:nrow(tagMatrix),z=t(tagMatrix),useRaster=TRUE, col=cols, yaxt="n", ylab="", xlab="", main="RH4-ChIP-H3K27ac")
+
+ggplot(tagMatrix) +
+  geom_
+```
+
+Will use deeptools to generate figures, first need to create the bed files for deeptools' computeMatrix function.
+
+```{r create bed files}
+promoters <- GenomicFeatures::promoters(x = txdb_dbi,upstream=0,downstream=0)
+
+promoters_list <- lapply(rms_df_list, function(x) {
+  gr = promoters[which(promoters$tx_name %in% x$transcript_id),]
+  return(gr)
+})
+
+names(promoters_list) <- c("RMS_FP_novel_enriched","RMS_FP_annotated_enriched",
+                           "RMS_FN_novel_enriched","RMS_FN_annotated_enriched",
+                           "RMS_combined_novel_enriched","RMS_combined_annotated_enriched")
+
+for(i in 1:6) {
+  rtracklayer::export.bed(object = promoters_list[[i]], 
+                          con = paste(basedir,"05_chipseq","analysis","deeptools",paste0(names(promoters_list)[[i]],".bed"),sep ="/"))
+}
+
+```
+
+# Heatmap of compute matrix
+
+```{r}
+
+test_matrix <- read.delim(paste(basedir,"05_chipseq","analysis","deeptools","767-RH4-ChIP-BRD4_matrix.txt", sep = "/"), 
+                          header =F, 
+                          sep = "\t", skip = 3) %>%
+  dplyr::filter(complete.cases(.) & !(rowSums(. == 0) == ncol(test_matrix)))
+
+
+ComplexHeatmap::Heatmap(matrix = test_matrix)
+
+```
+
+# Annotation of peaks
 
 ```{r extend chipseq peaks}
 

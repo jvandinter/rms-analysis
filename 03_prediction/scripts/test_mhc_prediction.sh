@@ -66,7 +66,7 @@ export run=$(uuidgen | tr '-' ' ' | awk '{print $1}')
 # Run netMHCpan
 input_netMHCpan_jobid=$(sbatch --parsable \
     --mem=10G \
-    --time=18:00:00 \
+    --time=24:00:00 \
     --job-name=${run}.input_netMHCpan \
     --gres=tmpspace:10G \
     --output=${wd}/log/netMHCpan/%A_input.out \
@@ -77,7 +77,7 @@ echo "netMHCpan jobid: ${input_netMHCpan_jobid}"
 mkdir -p ${wd}/log/netMHCpan
 netMHCpan_jobid=$(sbatch --parsable \
     --mem=10G \
-    --time=18:00:00 \
+    --time=24:00:00 \
     --job-name=${run}.netMHCpan \
     --gres=tmpspace:10G \
     --output=${wd}/log/netMHCpan/%A.out \

@@ -8,7 +8,7 @@
 # Run the command with the input file arguments
 apptainer exec -B /hpc/pmc_vanheesch:/hpc/pmc_vanheesch /hpc/local/Rocky8/pmc_vanheesch/singularity_images/merge_tsvfiles_python.sif \
     python3 /app/dataframe_merge.py \
-        -i "${outdir}/characteristics_${run}/characteristics_proteins.tsv" "${outdir}/omegafold_${run}/parsed_omegafold_${run}.tsv" "${outdir}/deepTMHMM_${run}/parsed_deepTMHMM_${run}.tsv" "${outdir}/signalp_${run}/parsed_signalp_${run}.tsv" "${outdir}/iupred3_${run}/parsed_iupred3_${run}.tsv" "${outdir}/netMHCpan_${run}/netMHCpan_SB_WB.tsv" "${outdir}/ELM_search_${run}/ELM_SLiMs_overview.tsv" \
-        -o "${outdir}/run_${run}_table.tsv"
+        -i "${outdir}/characteristics/characteristics_proteins.tsv" "${outdir}/omegafold/parsed_omegafold.tsv" "${outdir}/deepTMHMM/parsed_deepTMHMM.tsv" "${outdir}/signalp/parsed_signalp.tsv" "${outdir}/iupred3/parsed_iupred3.tsv" "${outdir}/netMHCpan/netMHCpan_SB_WB.tsv" "${outdir}/ELM_search/ELM_SLiMs_overview.tsv" \
+        -o "${outdir}/run_table.tsv"
 
-# "${outdir}/BLASTp_${run}/parsed_BLASTp_${run}.tsv"
+# "${outdir}/BLASTp/parsed_BLASTp.tsv"

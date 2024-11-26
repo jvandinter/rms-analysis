@@ -94,64 +94,21 @@ echo -e "\n ====== `date` ChIP peak calling pipeline ====== \n"
 echo -e "\n`date` Filtering and trimming ..."
 echo -e "====================================================================================== \n"
 
-trim_jobid=()
+#trim_jobid=()
 
-trim_jobid+=($(sbatch --parsable \
-  --mem=8G \
-  --cpus-per-task=4 \
-  --time=24:00:00 \
-  --array 1-${#samples[@]}%${simul_array_runs} \
-  --job-name=${run_id}.trimgalore \
-  --output=${project_folder}/log/${run_id}/trimgalore/%A_%a.out \
-  --export=ALL \
-  ${scriptdir}/chip_trimgalore.sh 
-))
-
-if [[ ${#trim_jobid[@]} -eq 0 ]]; then
-  fatal "TrimGalore job not submitted successfully, trim_jobid array is empty"
-fi
-
-info "trimgalore jobid: ${trim_jobid}"
+#trim_jobid+=($(sbatch --parsable \
+#  --mem=8G \
+#  --cpus-per-task=4 \
+#  --time=24:00:00 \
+#  --array 1-${#samples[@]}%${simul_array_runs} \
+#  --job-name=${run_id}.trimgalore \
+#  --output=${project_folder}/log/${run_id}/trimgalore/%A_%a.out \
+#  --export=ALL \
+#  ${scriptdir}/chip_trimgalore.sh 
+#))
 
 echo -e "\n`date` Align reads to genome with bwa mem2 ..."
 echo -e "====================================================================================== \n"
-
-bwa_jobid=()
-
-bwa_jobid+=($(sbatch --parsable \
-  --mem=80G \
-  --cpus-per-task=6 \
-  --time=24:00:00 \
-  --array 1-${#samples[@]}%${simul_array_runs} \
-  --job-name=${run_id}.bwa \
-  --output=${project_folder}/log/${run_id}/bwa/%A_%a.out \
-  --dependency=aftercorr:${trim_jobid} \
-  --export=ALL \
-  ${scriptdir}/chip_bwa.sh
-  
-))
-
-info "BWA mem2 jobid: ${bwa_jobid}"
-
-echo -e "\n`date` Remove duplicates with PICARD ..."
-echo -e "====================================================================================== \n"
-
-picard_jobid=()
-
-picard_jobid+=($(sbatch --parsable \
-  --mem=24G \
-  --cpus-per-task=1 \
-  --time=24:00:00 \
-  --gres=tmpspace:25G \
-  --array 1-${#samples[@]}%${simul_array_runs} \
-  --job-name=${run_id}.picard \
-  --output=${project_folder}/log/${run_id}/picard/%A_%a.out \
-  --dependency=aftercorr:${bwa_jobid} \
-  --export=ALL \
-  ${scriptdir}/chip_picard.sh
-))
-
-info "PICARD jobid: ${picard_jobid}"
 
 echo -e "\n`date` Call peaks with MACS ..."
 echo -e "====================================================================================== \n"
@@ -161,11 +118,10 @@ macs_jobid=()
 macs_jobid+=($(sbatch --parsable \
   --mem=12G \
   --cpus-per-task=1 \
-  --time=144:00:00 \
-  --gres=tmpspace:10G \
+  --time=24:00:00 \
+  --gres=tmpspace:30G \
   --job-name=${run_id}.macs \
   --output=${project_folder}/log/${run_id}/macs/macs.out \
-  --dependency=afterok:${picard_jobid} \
   --export=ALL \
   ${scriptdir}/chip_macs.sh
 ))

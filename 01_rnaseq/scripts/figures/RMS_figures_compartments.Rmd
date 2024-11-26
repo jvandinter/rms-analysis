@@ -1,0 +1,1700 @@
+---
+title: "RMS gene enrichment"
+author: "JD"
+date: "2023-07-10"
+output: html_document
+---
+
+# PCAs
+
+This RMD contains the scripts to analyze the DEseq2 output
+
+```{r libraries}
+library(magrittr)
+library(ggplot2)
+library(DESeq2)
+library(factoextra)
+library(ComplexHeatmap)
+```
+
+```{r parameters}
+basedir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq"
+savedir = paste(basedir,"results/quantification/figures",sep="/")
+metadata_dir = paste(basedir,"documentation",sep="/")
+txome_gtf = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/01_rnaseq/analysis/rnaseq_pipeline/customannotation/RMS_full_novel_filtered_corrected.sorted.gtf"
+tumor_type = "RMS"
+fp_target_genes = read.delim(file = paste("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/", "documentation","FP_target_genes.txt", sep = "/"), header = T)
+rds_loc = paste(basedir,"analysis","quantification","deseq2", sep = "/")
+```
+
+
+## RMS Patient PCA
+
+**Should only run once!**
+```{r load & prepare data}
+txi <- readRDS(paste(basedir, "RMS_counts_full.RDS", sep = "/"))
+meta_tumor <- read.delim(file = paste(basedir,"documentation","metadata_annot_RMS.txt",sep="/"),
+                         sep = ";")
+fusion_tumor <- read.delim(file = paste(basedir,"results","starfusion","fusion_annotation.txt", sep ="/")) %>%
+  dplyr::filter(sample_id %in% meta_tumor$sample_id)
+
+meta_tumor <- meta_tumor %>%
+  dplyr::filter(!(sample_id %in% fusion_tumor[which(fusion_tumor$condition_check == "mismatch"),]$sample_id))
+
+# NBL cohort
+txi_tumor <- list(abundance = txi$abundance[,which(colnames(txi$abundance) %in% meta_tumor$sample_id)],
+                counts = txi$counts[,which(colnames(txi$counts) %in% meta_tumor$sample_id)],
+                length = txi$counts[,which(colnames(txi$length) %in% meta_tumor$sample_id)],
+                countsFromAbundance = "scaledTPM")
+
+```
+
+```{r perform DEseq2}
+meta_tumor$condition <- factor(meta_tumor$condition, levels = c("ERMS","ARMS","SCRMS"))
+rownames(meta_tumor) <- meta_tumor$sample_id
+
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+all(colnames(txi_tumor$counts) == colnames(txi_tumor$length))
+
+meta_tumor <- meta_tumor[colnames(txi_tumor$counts),]
+all(rownames(meta_tumor) == colnames(txi_tumor$counts))
+
+tumor_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumor,
+                                            colData = meta_tumor,
+                                            design = ~ batch + condition)
+
+# Keep samples with more than 10 counts in more than 3 samples
+keep <- rowSums(DESeq2::counts(tumor_dds) >= 10) >= 3
+tumor_dds <- tumor_dds[keep,]
+
+tumor_dds <- DESeq2::DESeq(tumor_dds)
+
+saveRDS(tumor_dds, file = paste(savedir,paste0(tumor_type,"_DESEQ_subtype.RDS"), sep = "/"))
+
+DESeq2::resultsNames(tumor_dds)
+
+tumor_arms <- as.data.frame(DESeq2::results(tumor_dds, name = "condition_ARMS_vs_ERMS"))
+
+write.table(tumor_arms, file = paste(savedir,"RMS_FP_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+```
+
+Actual analysis:
+```{r read data}
+tumor_arms <- read.delim(paste(basedir,"documentation","RMS_fp.txt",sep = "/"), sep = ";")
+tumor_dds <- readRDS(paste(basedir,"analysis","quantification","deseq2",paste0(tumor_type,"_patient_condition.RDS"), sep = "/"))
+
+meta_tumor <- read.delim(file = paste(basedir,"documentation","metadata_annot_RMS.txt",sep="/"),
+                         sep = ";")
+fusion_tumor <- read.delim(file = paste(basedir,"results","starfusion","fusion_annotation.txt", sep ="/")) %>%
+  dplyr::filter(sample_id %in% meta_tumor$sample_id)
+
+```
+
+```{r create PCA}
+
+tumor_vsd <- DESeq2::vst(tumor_dds, blind = F)
+
+canon_genes <- assay(tumor_vsd)[which(grepl("ENSG",rownames(assay(tumor_vsd)))),]
+novel_genes <- assay(tumor_vsd)[which(grepl("MSTRG",rownames(assay(tumor_vsd)))),]
+
+# novel
+rv <- rowVars(novel_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(novel_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_pca_novel.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # canon
+rv <- rowVars(canon_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(canon_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + 
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_pca_canon.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+     # Combined
+    
+    rv <- rowVars(assay(tumor_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(assay(tumor_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_pca_all.pdf",sep="/"),
+       height = 6,
+       width = 6)
+```
+
+### Dissect the PCA
+
+Check the gene biotype of top 500 variance genes
+```{r }
+rms_gtf <- as.data.frame(rtracklayer::import.gff(paste(basedir,"analysis","rnaseq_pipeline","customannotation","RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")))
+
+check_df <- data.frame(gene_id = rownames(assay(tumor_vsd)[select, ])) %>%
+  dplyr::left_join(rms_gtf[,c("gene_id","gene_biotype")]) %>%
+  dplyr::distinct()
+
+table(check_df$gene_biotype)
+```
+
+Just 200/500 genes are protein coding. What happens if we select only processed transcripts (using various parameters) to the component analysis?
+- bare necs
+  - Only lncRNAs, protein coding genes & novel annotated genes
+- Arbitrary
+  - Subjective arbitrary collection of RNAs
+- no small RNAs
+  - Remove only all annotated smRNAs
+
+```{r}
+
+biotype_bare_necs <- rms_gtf[,c("gene_id","gene_biotype")] %>%
+  dplyr::filter(gene_biotype %in% c("lncRNA","stringtie","protein_coding")) %>%
+  dplyr::distinct()
+
+biotype_arbitrary <- biotype_bare_necs <- rms_gtf[,c("gene_id","gene_biotype")] %>%
+  dplyr::filter(gene_biotype %in% c("lncRNA","stringtie","protein_coding","processed_pseudogene",
+                                    "transcribed_processed_pseudogene","transcribed_unitary_pseudogene",
+                                    "translated_processed_pseudogene","translated_unprocessed_pseudogene",
+                                    "IG_C_gene","IG_V_gene","IG_J_gene","IG_D_gene")) %>%
+  dplyr::distinct()
+
+biotype_big_rna <- rms_gtf[,c("gene_id","gene_biotype")] %>%
+  dplyr::filter(!(gene_biotype %in% c("miRNA","snRNA","misc_RNA","scaRNA",
+                                      "snoRNA","rRNA_pseudogene","scRNA",
+                                      "rRNA","sRNA","ribozyme","vault_RNA",
+                                      "Mt_tRNA","Mt_rRNA"))) %>%
+  dplyr::distinct()
+
+```
+
+Bare necs
+```{r}
+vsd_subset <- assay(tumor_vsd)[which(rownames(assay(tumor_vsd)) %in% biotype_bare_necs$gene_id),]
+
+    rv <- rowVars(vsd_subset)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(vsd_subset[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+Arbitrary group
+```{r}
+vsd_subset <- assay(tumor_vsd)[which(rownames(assay(tumor_vsd)) %in% biotype_arbitrary$gene_id),]
+
+    rv <- rowVars(vsd_subset)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(vsd_subset[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+No small RNAs
+```{r}
+vsd_subset <- assay(tumor_vsd)[which(rownames(assay(tumor_vsd)) %in% biotype_big_rna$gene_id),]
+
+# change rownames
+gene_name_gene_id <- rms_gtf[,c("gene_id","gene_name")] %>%
+  dplyr::distinct()
+tx_name_gene_id <- rms_gtf[,c("transcript_id","gene_id","gene_name")] %>%
+  dplyr::distinct()
+rownames(vsd_subset) <- gene_name_gene_id$gene_name[match(rownames(vsd_subset), gene_name_gene_id$gene_id)]
+
+
+    rv <- rowVars(vsd_subset)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(vsd_subset[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumor_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumor_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+Use big-RNA, as it removes the least amount of transcripts / genes and still gives similar results
+
+```{r}
+
+dd <- facto_summarize(pca, element = "var", result = "contrib", axes = 1) %>%
+  dplyr::mutate(gene_id = gene_name_gene_id$gene_id[match(name, gene_name_gene_id$gene_name)])
+
+# Contributions of variables to PC1
+fviz_contrib(pca, choice = "var", axes = 1, top = 50)
+
+# Contributions of variables to PC2
+fviz_contrib(pca, choice = "var", axes = 2, top = 50)
+```
+
+Still results in some genes that are mono exonic, such as RPL21P16. 
+
+
+Use the pol3 database that Marina found:
+```{r create }
+
+pol3_txs <- read.delim(file = "/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/hg38.genecode.v30.pol3ncRNA.bed", header = F) %>%
+  dplyr::select(c("V1","V2","V3","V4")) %>%
+  dplyr::rename("chr" = V1,"start" = V2,"end" = V3,"transcript_id" = V4) %>%
+  dplyr::mutate(transcript_id = gsub("\\..*","",gsub("\\|.*","",transcript_id))) %>%
+  dplyr::filter(grepl("^ENST",transcript_id)) %>%
+  dplyr::left_join(tx_name_gene_id, by = "transcript_id")
+
+```
+
+Try to annotate the PC1 with particular GO terms:
+
+```{r}
+
+library(org.Hs.eg.db)
+library(GO.db)
+
+go_annotations <- AnnotationDbi::select(org.Hs.eg.db, keys = dd$gene_id, columns = "GO", keytype = "ENSEMBL") %>%
+  as.data.frame() %>%
+  dplyr::mutate(GO = ifelse(grepl("MSTRG",ENSEMBL),"GO:13030",GO))
+
+test <- go_annotations %>%
+  dplyr::group_by(GO) %>%
+  dplyr::summarise(count = n()) %>%
+  dplyr::arrange(desc(count)) %>%
+  dplyr::mutate(go_term = c(mapIds(GO.db, keys = GO, column = "DEFINITION", keytype = "GOID")))
+
+
+```
+
+## RMS Tumoroid PCA
+
+```{r load data}
+count_files <- list.files(paste(basedir,"analysis","quantification","salmon_quant",
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+
+gtf = paste(basedir,"analysis","rnaseq_pipeline","customannotation",
+          paste0(tumor_type,"_full_novel_filtered_corrected.sorted.gtf"), sep = "/")
+
+txdb = paste(basedir,"analysis","rnaseq_pipeline","customannotation",
+           paste0(tumor_type,"_full"),
+           paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+
+txdb <- AnnotationDbi::loadDb(txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+gtf <- rtracklayer::import.gff(gtf)
+gtf_df <- as.data.frame(gtf) %>%
+  subset(type == "transcript")
+gtf_gene_df <- as.data.frame(gtf) %>%
+  subset(type == "gene")
+gene_name_df <- gtf_gene_df[,c("gene_id","gene_name")]
+
+count_files_tumoroid <- count_files[which(names(count_files) %in% c(98:129))]
+
+txi_tumoroid <- tximport::tximport(count_files_tumoroid, type = "salmon", tx2gene = tx2gene, dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+meta_tumoroid <- data.frame(sample_id = 98:129,
+                            condition = c(rep("FP-RMS",16),rep("FN-RMS",16)),
+                            sex = rep("Not Available",32),
+                            batch = "tumoroid") %>%
+  dplyr::filter(sample_id %in% names(count_files_tumoroid))
+rownames(meta_tumoroid) <- meta_tumoroid$sample_id
+
+meta_tumoroid$condition <- factor(meta_tumoroid$condition, levels = c("ERMS","ARMS"))
+
+meta_tumoroid$replicate <- rep(1:8,each =4)[-32]
+
+```
+
+```{r perform DEseq2}
+
+all(rownames(meta_tumoroid) == colnames(txi_tumoroid$counts))
+all(colnames(txi_tumoroid$counts) == colnames(txi_tumoroid$length))
+
+meta_tumoroid <- meta_tumoroid[colnames(txi_tumoroid$counts),]
+all(rownames(meta_tumoroid) == colnames(txi_tumoroid$counts))
+
+tumoroid_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_tumoroid,
+                                            colData = meta_tumoroid,
+                                            design = ~ condition)
+
+keep <- rowSums(counts(tumoroid_dds) >= 10) >= 2
+tumoroid_dds <- tumoroid_dds[keep,]
+
+tumoroid_dds <- DESeq2::DESeq(tumoroid_dds)
+
+saveRDS(tumoroid_dds, file = paste(savedir,paste0(tumor_type,"_DESEQ_tumoroid_subtype.RDS"), sep = "/"))
+
+resultsNames(tumoroid_dds)
+
+tumoroid_arms <- as.data.frame(results(tumoroid_dds, contrast=c("condition","ARMS","ERMS")))
+
+write.table(tumoroid_arms, file = paste(savedir,"RMS_FP_tumoroid_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+write.table(meta_tumoroid, file = paste(savedir,"RMS_tumoroid_metadata.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+```
+
+```{r create PCA}
+
+tumoroid_dds <- readRDS(paste(savedir,paste0(tumor_type,"_DESEQ_tumoroid_subtype.RDS"), sep = "/"))
+
+tumoroid_vsd <- DESeq2::vst(tumoroid_dds, blind = F)
+
+canon_genes <- assay(tumoroid_vsd)[which(grepl("ENSG",rownames(assay(tumoroid_vsd)))),]
+novel_genes <- assay(tumoroid_vsd)[which(grepl("MSTRG",rownames(assay(tumoroid_vsd)))),]
+
+# novel
+rv <- rowVars(novel_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(novel_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","replicate"), 
+        drop = FALSE])
+    intgroup.df$replicate <- as.factor(intgroup.df$replicate)
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = replicate, shape = condition, label = name)) + 
+      geom_point(size = 8, alpha = 0.25) + 
+      ggrepel::geom_text_repel() +
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      guides(label = "none",color = "none") +
+      coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_tumoroids_pca_novel.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # canon
+rv <- rowVars(canon_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(canon_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","replicate"), 
+        drop = FALSE])
+    intgroup.df$replicate <- as.factor(intgroup.df$replicate)
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = replicate, shape = condition, label = name)) + 
+      geom_point(size = 8, alpha = 0.25) + 
+      ggrepel::geom_text_repel(max.overlaps = 20) +
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      guides(label = "none",color = "none") +
+      coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_tumoroids_pca_canon.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # Combined
+    
+    rv <- rowVars(assay(tumoroid_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(assay(tumoroid_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+        intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","replicate"), 
+        drop = FALSE])
+    intgroup.df$replicate <- as.factor(intgroup.df$replicate)
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = replicate, shape = condition, label = name)) + 
+      geom_point(size = 8, alpha = 0.25) + 
+      ggrepel::geom_text_repel(max.overlaps = 20) +
+      xlab(paste0("PC1: ", round(percentVar[1] * 100), "% variance")) + 
+      ylab(paste0("PC2: ", round(percentVar[2] * 100), "% variance")) + 
+      guides(label = "none",color = "none") +
+      coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_tumoroids_pca_all.pdf",sep="/"),
+       height = 6,
+       width = 6)
+```
+
+No difference in tumoroid data, as expected
+```{r}
+vsd_subset <- assay(tumoroid_vsd)[which(rownames(assay(tumoroid_vsd)) %in% biotype_bare_necs$gene_id),]
+
+rv <- rowVars(assay(tumoroid_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(tumoroid_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(tumoroid_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(tumoroid_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+## RMS combined PCA
+
+```{r load data}
+count_files <- list.files(paste(basedir,"analysis","quantification","salmon_quant",
+                                sep  = "/"),
+                          recursive = T,
+                          pattern = "quant.sf",
+                          full.names = T)
+names(count_files) <- basename(gsub("/quant.sf","",count_files))
+
+gtf = paste(basedir,"analysis","rnaseq_pipeline","customannotation",
+          paste0(tumor_type,"_full_novel_filtered_corrected.gtf"), sep = "/")
+
+txdb = paste(basedir,"analysis","rnaseq_pipeline","customannotation",
+           paste0(tumor_type,"_full"),
+           paste0(tumor_type, "_full_novel_filtered_corrected.gtf_TxDb"), sep = "/")
+
+txdb <- AnnotationDbi::loadDb(txdb)
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- select(txdb, k, "GENEID", "TXNAME")
+
+gtf <- rtracklayer::import.gff(gtf)
+gtf_df <- as.data.frame(gtf) %>%
+  subset(type == "transcript")
+gtf_gene_df <- as.data.frame(gtf) %>%
+  subset(type == "gene")
+
+meta_tumor <- read.delim(file = paste(basedir,"documentation","metadata_annot_RMS.txt",sep="/"),
+                         sep = ";")
+fusion_tumor <- read.delim(file = paste(basedir,"results","starfusion","fusion_annotation.txt", sep ="/")) %>%
+  dplyr::filter(sample_id %in% meta_tumor$sample_id)
+
+meta_tumor$new_condition <- ifelse(meta_tumor$sample_id %in% fusion_tumor[which(fusion_tumor$condition_check =="mismatch"),]$sample_id, "ERMS",meta_tumor$new_condition)
+
+count_files_combined <- count_files[which(names(count_files) %in% c(98:129,meta_tumor$sample_id))]
+
+txi_combined <- tximport::tximport(count_files_combined, type = "salmon", tx2gene = tx2gene, dropInfReps = T, countsFromAbundance = "scaledTPM")
+
+meta_combined <- data.frame(sample_id = as.character(98:129),
+                            new_condition = c(rep("ARMS",16),rep("ERMS",16)),
+                            batch = "tumoroid") %>%
+  dplyr::filter(sample_id %in% names(count_files_combined)) %>%
+  rbind(meta_tumor[,c("sample_id","batch","new_condition")])
+
+rownames(meta_combined) <- meta_combined$sample_id
+
+meta_combined$condition <- factor(meta_combined$new_condition, levels = c("ERMS","ARMS","SCRMS"))
+meta_combined$batch <- factor(meta_combined$batch, levels = c("PMC","SJ","tumoroid"))
+
+```
+
+```{r perform DEseq2}
+
+all(rownames(meta_combined) == colnames(txi_combined$counts))
+all(colnames(txi_combined$counts) == colnames(txi_combined$length))
+
+meta_combined <- meta_combined[colnames(txi_combined$counts),]
+all(rownames(meta_combined) == colnames(txi_combined$counts))
+
+combined_dds <- DESeq2::DESeqDataSetFromTximport(txi = txi_combined,
+                                            colData = meta_combined,
+                                            design = ~ batch + condition)
+
+combined_vsd <- DESeq2::vst(combined_dds, blind = F)
+
+keep <- rowSums(counts(combined_dds) >= 10) >= 2
+combined_dds <- combined_dds[keep,]
+
+combined_dds <- DESeq2::DESeq(combined_dds)
+
+saveRDS(combined_dds, file = paste(savedir,paste0(tumor_type,"_DESEQ_combined_subtype.RDS"), sep = "/"))
+
+resultsNames(combined_dds)
+
+combined_arms <- as.data.frame(results(combined_dds, contrast=c("condition","ARMS","ERMS")))
+
+write.table(combined_arms, file = paste(savedir,"RMS_FP_combined_res.txt",sep = "/"), quote = F, sep = ";", row.names = T)
+
+```
+
+```{r create PCA}
+combined_dds <- readRDS(paste(savedir,paste0(tumor_type,"_DESEQ_combined_subtype.RDS"), sep = "/"))
+
+combined_vsd <- DESeq2::vst(combined_dds, blind = F)
+
+canon_genes <- assay(combined_vsd)[which(grepl("ENSG",rownames(assay(combined_vsd)))),]
+novel_genes <- assay(combined_vsd)[which(grepl("MSTRG",rownames(assay(combined_vsd)))),]
+
+# novel
+rv <- rowVars(novel_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(novel_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed(ratio = 1) +
+      theme_classic()
+
+    ggsave(filename = paste(savedir,"RMS_combined_pca_novel.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # canon
+rv <- rowVars(canon_genes)
+    select <- order(rv, decreasing = TRUE)[seq_len(min(250, 
+        length(rv)))]
+    pca <- prcomp(t(canon_genes[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed(ratio = 1) +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_combined_pca_canon.pdf",sep="/"),
+       height = 6,
+       width = 6)
+    
+    # Combined
+    
+    rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(500, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+    ggsave(filename = paste(savedir,"RMS_combined_pca_all.pdf",sep="/"),
+       height = 6,
+       width = 6)
+```
+
+Use the different levels created for **Dissect the PCA**
+
+Strict removal
+```{r}
+vsd_subset <- assay(combined_vsd)[which(rownames(assay(combined_vsd)) %in% biotype_bare_necs$gene_id),]
+
+rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+Arbitrary
+```{r}
+vsd_subset <- assay(combined_vsd)[which(rownames(assay(combined_vsd)) %in% biotype_arbitrary$gene_id),]
+
+rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+    
+```
+
+only remove smRNAs
+```{r}
+vsd_subset <- assay(combined_vsd)[which(rownames(assay(combined_vsd)) %in% biotype_big_rna$gene_id),]
+
+rv <- rowVars(assay(combined_vsd))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(1000, 
+        length(rv)))]
+    pca <- prcomp(t(assay(combined_vsd)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+    intgroup.df <- as.data.frame(colData(combined_vsd)[, c("condition","batch"), 
+        drop = FALSE])
+    group <- factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2], group = group, 
+        intgroup.df, name = colnames(combined_vsd))
+    attr(d, "percentVar") <- percentVar[1:2]
+    
+    ggplot(data = d, aes(x = PC1, y = PC2, color = group)) + 
+        geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+        100), "% variance")) + ylab(paste0("PC2: ", round(percentVar[2] * 
+        100), "% variance")) + coord_fixed() +
+      theme_classic()
+
+```
+
+
+The PCA is still weird here, mostly clustering on a technical level. Maybe underlines that RNA-seq of tumoroid and patient cannot be really compared with each other.
+
+
+
+
+## Subtype factor HM
+
+```{r }
+picked <- c("DES"="ENSG00000175084","MYOG"="ENSG00000122180","MYOD1"="ENSG00000129152")
+
+meta <- as.data.frame(colData(tumor_vsd))
+
+heatmap_matrix <- t(scale(t(assay(tumor_vsd))))
+heatmap_matrix <- heatmap_matrix[which(rownames(heatmap_matrix) %in% picked),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+hm_fp <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition == "ARMS"),]$sample_id)]
+hm_fn <- heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta[which(meta$condition %in% c("SCRMS","ERMS")),]$sample_id)]
+
+breaks <- seq(-2, 2, length.out = 100)
+
+chm_fp <- ComplexHeatmap::Heatmap(matrix = hm_fp,
+                          # Hide names
+  show_row_names = T,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_fn <- ComplexHeatmap::Heatmap(matrix = hm_fn,
+                          # Hide names
+                          cluster_columns = T,
+  show_row_names = F,
+  show_row_dend = T,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+
+pdf(file = paste(savedir,"heatmaps",paste0(plotname,".pdf"), sep = "/"), width = 10, height = 4.5)
+
+ComplexHeatmap::draw(chm_fp + chm_fn,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+
+```
+
+```{r}
+
+count_matrix <- heatmap_matrix %>%
+  as.data.frame() %>%
+  dplyr::mutate(gene_id = names(picked)[match(rownames(.), picked)]) %>%
+  tidyr::pivot_longer(!gene_id,
+                      names_to = "sample_id",
+                      values_to = "scaled_vst")
+# boxplot per group
+plot_df <- dplyr::left_join(count_matrix,meta, by = "sample_id")
+
+ggplot(plot_df, aes(x = condition, y = scaled_vst)) +
+  ggbeeswarm::geom_quasirandom(aes(col = batch)) +
+  stat_summary(fun = median, fun.min = ~quantile(.x, probs = .25), 
+               fun.max = ~quantile(.x, probs = .75), shape = 21, stroke = 1.2, 
+               linewidth = 2, size = 2, aes(fill = condition)) +
+  theme_classic() +
+  facet_wrap(~ gene_id)
+
+```
+
+# RMS-enriched genes
+
+```{r}
+fp_pass_novel <- read.delim(paste(basedir,"results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fp_pass_canon <- read.delim(paste(basedir,"results","quantification","FP-patient",
+                                  paste0("RMS_FP-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fn_pass_novel <- read.delim(paste(basedir,"results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+fn_pass_canon <- read.delim(paste(basedir,"results","quantification","FN-patient",
+                                  paste0("RMS_FN-patient_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_novel <- read.delim(paste(basedir,"results","quantification","old",
+                                  paste0("RMS_novel_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+combined_pass_canon <- read.delim(paste(basedir,"results","quantification","old",
+                                  paste0("RMS_canon_enriched_matrix.txt"),sep = "/"), 
+                            sep = ";", header = T)
+
+venn_canon <- list(`FP-RMS` = fp_pass_canon[which(fp_pass_canon$pass == T & fp_pass_canon$selected == T),]$gene_id,
+                   `FN-RMS` = fn_pass_canon[which(fn_pass_canon$pass == T & fn_pass_canon$selected == T),]$gene_id,
+                   `combined RMS` = combined_pass_canon[which(combined_pass_canon$pass == T & combined_pass_canon$selected == T),]$gene_id)
+
+venn_novel <- list(`FP-RMS` = fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id,
+                   `FN-RMS` = fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id,
+                   `combined RMS` = combined_pass_novel[which(combined_pass_novel$pass == T),]$gene_id)
+
+common_AB <- intersect(venn_canon$`FP-RMS`, venn_canon$`FN-RMS`)
+
+# Find the elements present in common_AB but not in C
+result <- setdiff(common_AB, venn_canon$`combined RMS`)
+
+# Print the result
+print(result)
+
+```
+
+## Upset RMS enriched
+
+Upset plot of novel genes
+
+```{r upset novel}
+
+m1 = ComplexHeatmap::make_comb_mat(venn_novel)
+
+ComplexHeatmap::UpSet(m1,
+                      pt_size = unit(5, "mm"),
+                      top_annotation = upset_top_annotation(m1, add_numbers = TRUE),
+                      right_annotation = upset_right_annotation(m1, add_numbers = TRUE,
+                                                                gp = gpar(fill = c("#C04037","#266566","#FFB07C")),),
+                      comb_col = c("grey50", "grey35", "black")[comb_degree(m1)],
+                      bg_pt_col = "white")
+
+```
+
+```{r upset canon}
+
+m1 = ComplexHeatmap::make_comb_mat(venn_canon)
+
+ComplexHeatmap::UpSet(m1,
+                      pt_size = unit(5, "mm"), 
+                      top_annotation = upset_top_annotation(m1, add_numbers = TRUE),
+                      right_annotation = upset_right_annotation(m1, add_numbers = TRUE,
+                                                                gp = gpar(fill = c("#C04037","#266566","#FFB07C")),),
+                      comb_col = c("grey50", "grey35", "black")[comb_degree(m1)],
+                      bg_pt_col = "white")
+```
+
+# Nouveau box plots
+
+```{r load data for plots}
+dds <- readRDS(paste(basedir,"analysis","quantification","deseq2","RMS_counts_combined.RDS",sep="/"))
+
+rms_conditions <- c("FP-RMS","FN-RMS")
+gtex_conditions <- c("Adipose Tissue","Adrenal Gland", "Blood Vessel","Bladder","Brain","Breast",
+                     "Skin","Blood","female_reproductive","digestive_system","Heart","Kidney",
+                     "Liver","Lung","Salivary Gland","Muscle","Nerve","Pancreas",
+                     "Pituitary","Spleen","Thyroid","male_reproductive")
+evo_conditions <- c("forebrain_fetal","forebrain_child","forebrain_adult",
+                    "hindbrain_fetal","hindbrain_child","hindbrain_adult",
+                    "heart_fetal","heart_child","heart_adult",
+                    "kidney_fetal","kidney_child",
+                    "liver_fetal","liver_child","liver_adult",
+                    "ovary_fetal",
+                    "testis_fetal","testis_child","testis_adult")
+r2_conditions <- c("cancer cell line","cell type","cell line","tissue")
+
+```
+
+```{r colours}
+  tissue_tumor_cols <- c("#C04037","#266566")
+  # Brain - Cerebellum - Heart - Kidney - Liver - Ovary - Testis
+  tissue_evo_cols <- c("#3698C7","#32CCFF","#AE1319","#CB992B","#339900","#CC3399","#FF6600")
+  # "Adipose Tissue"      "Adrenal Gland"       "Blood Vessel"        "Bladder"             "Brain"              
+  # "Breast"              "Skin"                "Blood"               "female_reproductive" "digestive_system"    "Heart"              
+  # "Kidney"              "Liver"               "Lung"                "Salivary Gland"      "Muscle"              "Nerve"              
+  # "Pancreas"            "Pituitary"           "Spleen"              "Thyroid"             "male_reproductive"
+  tissue_gtex_cols <- c("#FECE98","#98EEA0","#FE7F90","#CF7F89","#F4F69F",
+                        "#46CEC9","#7A76F8","#FD19B7","#FE5AF9","#CA9865","#6B1995",
+                        "#49FFC3","#A9BB73","#9BFF52","#9ABC8D","#A9A7FA","#F2CE3E",
+                        "#995A3D","#ABFFA1","#7A8B60","#226E2C","#A9A9A9")
+  # healthy tissue - cancer cell line - cell line 
+  tissue_r2_cols <- c("#F50021","#F300ED","#23EC3D","#1400F5")
+  
+  tissue_cols <- c(tissue_tumor_cols,tissue_r2_cols,tissue_gtex_cols,tissue_evo_cols)
+  
+  
+  #"EVO"  "GTEX" "PMC"  "R2"   "SJ"
+  # PMC - SJ - GTEx - EVO - ATLAS
+  batch_cols <- c("#7AD151FF","#6EA3D1","#FE9A2F","#1675B6","#B71238")
+```
+
+MYCN plot
+
+Checked picked genes:
+FOXO1
+MYCN
+"PAX3"="ENSG00000135903"
+PAX7
+MSTRG.26303
+MSTRG.9368
+MYOD1
+MSTRG.57141
+
+```{r wrangle data}
+
+picked_gene <- c("MSTRG.57141"="MSTRG.57141")
+
+plot_counts <- DESeq2::plotCounts(dds = dds,
+                                  gene = picked_gene,
+                                  intgroup = c("condition","batch"),
+                                  normalized=T,
+                                  returnData = T) %>% 
+  dplyr::mutate(evo_condition = ifelse(grepl("_child|_fetal|_adult",condition),
+                                       gsub("_.*","",condition),
+                                       as.character(condition)),
+                evo_age = ifelse(grepl("_child|_fetal|_adult",condition),
+                                       gsub(".*_","",condition),
+                                       ifelse(grepl("RMS",condition),
+                                              "RMS",
+                                              condition)))
+
+gtex_plot <- plot_counts %>% 
+  dplyr::filter(condition %in% c(rms_conditions,gtex_conditions)) %>% 
+  ggplot( aes(x = condition, y = count, col = condition, fill = condition)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.6,size =2) +
+  stat_summary(fun.data = "mean_sdl",fun.args = list(mult = 1),
+    geom = "linerange",
+    col = "grey20",
+    size = 1) +
+  stat_summary(
+    fun.y = "mean",
+    geom = "point",
+    size = 5,
+    shape = 21,
+    stroke = 1,
+    col = "grey20"
+  ) +
+  scale_fill_manual(values = c(tissue_tumor_cols,tissue_gtex_cols)) +
+  scale_color_manual(values = c(tissue_tumor_cols,tissue_gtex_cols)) +
+  labs(title = paste("GTEx -",names(picked_gene)), y = "norm count") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme_classic() +
+  theme(legend.position = "none")
+
+r2_plot <- plot_counts %>% 
+  dplyr::filter(condition %in% c(rms_conditions,r2_conditions)) %>% 
+  ggplot( aes(x = condition, y = count, col = condition, fill = condition)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.6,size =2) +
+  stat_summary(fun.data = "mean_sdl",fun.args = list(mult = 1),
+    geom = "linerange",
+    col = "grey20",
+    size = 1) +
+  stat_summary(
+    fun.y = "mean",
+    geom = "point",
+    size = 5,
+    shape = 21,
+    stroke = 1,
+    col = "grey20"
+  ) +
+  scale_fill_manual(values = c(tissue_tumor_cols,tissue_r2_cols)) +
+  scale_color_manual(values = c(tissue_tumor_cols,tissue_r2_cols)) +
+  labs(title = paste("R2 RNA Atlas -",names(picked_gene)), y = NULL) +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme_classic() +
+  theme(legend.position = "none")
+
+evo_plot <- plot_counts %>% 
+  dplyr::filter(condition %in% c(rms_conditions,evo_conditions)) %>% 
+  dplyr::mutate(evo_age = factor(evo_age,levels = c("RMS","fetal","child","adult")),
+                evo_condition = factor(evo_condition,levels = c("FP-RMS","FN-RMS","forebrain","hindbrain",
+                                                                "heart","kidney","liver","ovary","testis"))) %>%
+  ggplot( aes(x = evo_age, y = count, col = evo_condition, fill = evo_condition)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.6,size =2) +
+  stat_summary(fun.data = "mean_sdl",fun.args = list(mult = 1),
+    geom = "linerange",
+    col = "grey20",
+    size = 1) +
+  stat_summary(
+    fun.y = "mean",
+    geom = "point",
+    size = 5,
+    shape = 21,
+    stroke = 1,
+    col = "grey20"
+  ) +
+  scale_fill_manual(values = c(tissue_tumor_cols,tissue_evo_cols)) +
+  scale_color_manual(values = c(tissue_tumor_cols,tissue_evo_cols)) +
+  labs(title = paste("EVO-DEVO -",names(picked_gene)), y = NULL) +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme_classic() +
+  theme(legend.position = "none",
+        strip.background = element_blank()) +
+  facet_grid(~ evo_condition, scales = "free_x")
+
+ggpubr::ggarrange(gtex_plot,r2_plot,evo_plot, nrow = 1, widths = c(1,0.75,1))
+
+ggsave(filename = paste(basedir,"results","quantification","figures","enriched_counts",paste0(names(picked_gene),".pdf"), sep ="/"),
+       device = "pdf",
+       width = 16,
+       height = 6)
+  
+```
+
+Plot all genes from the target list
+
+Now include Tumoroid data as well
+
+```{r}
+dds_rms <- readRDS(paste(rds_loc,"RMS_counts_org_patient.RDS", sep = "/"))
+dds_rms <- DESeq2::estimateSizeFactors(dds_rms)
+norm_counts <- DESeq2::counts(dds_rms,normalized = T)
+
+type_cols <- c("#266566","#C04037","#1E90FF","#FFD700")
+
+rms_fp_cohort = read.delim(paste(basedir, "documentation", "RMS_fp.txt", sep = "/"), sep = ";")
+rms_fn_cohort = read.delim(paste(basedir, "documentation", "RMS_fn.txt", sep = "/"), sep = ";")
+rms_fp_org = read.delim(paste(basedir, "documentation", "RMS_fp_org.txt", sep = "/"), sep = ";")
+rms_fn_org = read.delim(paste(basedir, "documentation", "RMS_fn_org.txt", sep = "/"), sep = ";")
+
+fp_samples = c(rms_fp_cohort$sample_id,rms_fp_org$sample_id)
+fn_samples = c(rms_fn_cohort$sample_id,rms_fn_org$sample_id)
+
+rms_meta <- rbind(rms_fp_cohort,rms_fn_cohort,rms_fp_org,rms_fn_org)
+
+plot_targets <- as.data.frame(norm_counts) %>%
+  dplyr::filter(rownames(.) %in% fp_target_genes$gene_id) %>%
+  t() %>%
+  as.data.frame() %>%
+  dplyr::mutate(sample_id = rownames(.))
+
+colnames(plot_targets) <- c(fp_target_genes$gene_symbol[match(colnames(plot_targets),
+                                                              fp_target_genes$gene_id)][1:nrow(fp_target_genes)],
+                            "sample_id")
+
+
+
+plot_targets <- as.data.frame(plot_targets) %>%
+  tidyr::pivot_longer(cols = !sample_id, names_to = "genes", values_to = "count") %>% 
+  dplyr::left_join(fp_target_genes[,c("gene_symbol","gene_id")], by = c("genes" = "gene_symbol")) %>%
+  dplyr::mutate(batch = ifelse(grepl("^SJ|^PM",sample_id),"patient","tumoroid"),
+                condition = ifelse(sample_id %in% fn_samples,"FN",
+                                   ifelse(sample_id %in% fp_samples,"FP",NA))) %>%
+  dplyr::mutate(type = factor(paste(batch,condition, sep = "-")),
+                ###
+                # Use this line to make counts plot same order as FP target heatmap
+                ###
+                genes = factor(genes, levels = fp_target_genes$gene_symbol[match(fp_target_genes$gene_id,
+                                                                                 rownames(heatmap_matrix))]))
+
+ggplot(plot_targets,aes(x = genes,y=log2(count+0.1),col=type,fill=genes)) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.6,size =2) +
+  stat_summary(fun.data = "mean_sdl",fun.args = list(mult = 1),
+    geom = "linerange",
+    col = "grey20",
+    size = 1) +
+  stat_summary(
+    fun.y = "mean",
+    geom = "point",
+    size = 5,
+    shape = 21,
+    stroke = 1,
+    col = "grey20"
+  ) +
+  scale_color_manual(values = type_cols) +
+  geom_hline(yintercept = 5, col = "red") +
+  theme_classic() +
+  theme(strip.background = element_blank()) + 
+  guides(fill="none") +
+  coord_flip()
+
+```
+
+## weird genes
+
+```{r plot weird genes}
+
+weird_genes <- unique(combined_enr_genes[!(combined_enr_genes %in% c(fp_enr_genes,fn_enr_genes))])
+
+plot_targets <- as.data.frame(norm_counts) %>%
+  dplyr::filter(rownames(.) %in% weird_genes) %>%
+  t() %>%
+  as.data.frame() %>%
+  dplyr::mutate(sample_id = rownames(.))
+
+colnames(plot_targets) <- c(fp_target_genes$gene_symbol[match(colnames(plot_targets),
+                                                              weird_genes)][length(weird_genes)],
+                            "sample_id")
+
+plot_targets <- as.data.frame(plot_targets) %>%
+  tidyr::pivot_longer(cols = !sample_id, names_to = "genes", values_to = "count") %>% 
+  dplyr::left_join(fp_target_genes[,c("gene_symbol","gene_id")], by = c("genes" = "gene_symbol")) %>%
+  dplyr::mutate(batch = ifelse(grepl("^SJ|^PM",sample_id),"patient","tumoroid"),
+                condition = ifelse(sample_id %in% fn_samples,"FN",
+                                   ifelse(sample_id %in% fp_samples,"FP",NA))) %>%
+  dplyr::mutate(type = factor(paste(batch,condition, sep = "-")))
+
+ggplot(plot_targets,aes(x = genes,y=log2(count+0.1),col=type,fill=genes)) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.6,size =2) +
+  stat_summary(fun.data = "mean_sdl",fun.args = list(mult = 1),
+    geom = "linerange",
+    col = "grey20",
+    size = 1) +
+  stat_summary(
+    fun.y = "mean",
+    geom = "point",
+    size = 5,
+    shape = 21,
+    stroke = 1,
+    col = "grey20"
+  ) +
+  scale_color_manual(values = type_cols) +
+  geom_hline(yintercept = 5, col = "red") +
+  theme_classic() +
+  theme(strip.background = element_blank()) + 
+  guides(fill="none") +
+  coord_flip()
+```
+
+```{r only plot DE genes}
+
+```
+
+```{r only plot enriched genes}
+p1 <- plot_targets %>%
+  dplyr::left_join(gene_name_df, c("genes" = "gene_name")) %>%
+  dplyr::filter(gene_id %in% c(venn_canon[[1]],venn_canon[[2]],venn_canon[[3]])) %>%
+ggplot(aes(x = reorder(genes, log2(count+0.1), mean),y=log2(count+0.1),col=type,fill=genes)) +
+      ggbeeswarm::geom_quasirandom(alpha = 0.6,size =2) +
+  scale_color_manual(values = type_cols) +
+  geom_hline(yintercept = 5, col = "red") +
+  theme_classic() +
+  theme(strip.background = element_blank()) + 
+  guides(fill="none") + coord_flip()
+
+```
+
+# Heatmaps
+
+```{r create RDS data, eval = F, echo = F}
+
+dds <- readRDS(file = paste(basedir,"analysis","quantification","deseq2","RMS_counts_combined.RDS", sep = "/"))
+dds <- DESeq2::estimateSizeFactors(dds)
+vsd <- DESeq2::vst(dds,blind = T)
+heatmap <- t(scale(t(assay(vsd))))
+norm_counts <- DESeq2::counts(dds, normalized = T)
+
+saveRDS(norm_counts, file = paste(basedir,"analysis","quantification","deseq2","RMS_norm_counts_combined.RDS", sep = "/"))
+saveRDS(heatmap, file = paste(basedir,"analysis","quantification","deseq2","RMS_heatmap_combined.RDS", sep = "/"))
+
+```
+
+Load the created RMS data
+```{r load data}
+heatmap <- readRDS(heatmap, file = paste(basedir,"analysis","quantification","deseq2","RMS_heatmap_combined.RDS", sep = "/"))
+```
+
+```{r metadata}
+
+rms_fp_cohort = read.delim(paste(basedir, "documentation", "RMS_fp.txt", sep = "/"), sep = ";")
+rms_fn_cohort = read.delim(paste(basedir, "documentation", "RMS_fn.txt", sep = "/"), sep = ";")
+r2_cohort = read.delim(paste(basedir, "documentation", "RMS_R2_atlas.txt", sep = "/"), sep = ";")
+gtex_cohort = read.delim(paste(basedir, "documentation", "RMS_GTEx.txt", sep = "/"), sep = ";")
+
+evo_cohort <- read.table(file = paste(basedir,"documentation","old_docs","metadata_evo.txt", sep = "/"), sep = ";", header = T) %>%
+  dplyr::mutate(fetal_tissue = factor(fetal_tissue, levels = c("RMS",
+                                                               "forebrain_fetal","forebrain_postbirth",
+                                                               "hindbrain_fetal","hindbrain_postbirth",
+                                                               "heart_fetal","heart_postbirth",
+                                                               "kidney_fetal","kidney_postbirth",
+                                                               "liver_fetal","liver_postbirth",
+                                                               "ovary_fetal",
+                                                               "testis_fetal","testis_postbirth")),
+                condition = factor(tissue, levels = c("forebrain","hindbrain","heart","kidney","liver","ovary","testis")),
+                stage = ifelse(fetal_tissue == "RMS","RMS",stage)) %>%
+  dplyr::filter(batch == "EVO") %>%
+  dplyr::select(sample_id,sex,condition,batch)
+
+healthy_cohort = rbind(r2_cohort,gtex_cohort,evo_cohort)
+
+write.table(healthy_cohort, file = paste("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/documentation/healthy_cohort.txt"), quote=F,sep =";")
+
+meta_cohort = rbind(rms_fp_cohort,rms_fn_cohort,r2_cohort,gtex_cohort,evo_cohort) %>%
+  dplyr::mutate(condition = factor(condition, levels = c(unique(rms_fp_cohort$condition),
+                                                unique(rms_fn_cohort$condition),
+                                                unique(r2_cohort$condition),
+                                                unique(gtex_cohort$condition),
+                                                levels(evo_cohort$condition))))
+
+
+
+tissue_types <- as.character(unique(meta_cohort$condition))
+
+```
+
+Mapped out colours:
+
+```{r eval = F,echo=F}
+"#C04037"             "#266566"                 "#F50021"          "#F300ED"            "#23EC3D"             "#1400F5" 
+"FP-RMS"              "FN-RMS"              "cancer cell line"    "cell type"           "cell line"           "tissue"
+
+"#FECE98"             "#98EEA0"               "#FE7F90"           "#CF7F89"            "#F4F69F"              "#46CEC9"
+"Adipose Tissue"      "Adrenal Gland"       "Blood Vessel"        "Bladder"             "Brain"               "Breast"
+
+"#7A76F8"            "#FD19B7"                    "#FE5AF9"            "#CA9865"       "#6B1995"              "#49FFC3"
+"Skin"                "Blood"               "female_reproductive" "digestive_system"    "Heart"               "Kidney"
+
+"#A9BB73"            "#9BFF52"                 "#9ABC8D"          "#A9A7FA"            "#F2CE3E"               "#995A3D"
+"Liver"               "Lung"                "Salivary Gland"      "Muscle"              "Nerve"               "Pancreas"
+
+"#ABFFA1"             "#7A8B60"            "#226E2C"                 "#A9A9A9"           "#3698C7"             "#32CCFF"
+"Pituitary"           "Spleen"              "Thyroid"             "male_reproductive"   "forebrain"           "hindbrain"
+
+"#AE1319"             "#CB992B"            "#339900"             "#CC3399"              "#FF6600"
+"heart"               "kidney"              "liver"               "ovary"               "testis"
+
+```
+
+```{r colors}
+
+  heatmap_cols <- colorRampPalette(rev(RColorBrewer::brewer.pal(n = 5, name = "RdYlBu")))(100)
+  # FP - FN
+  tissue_tumor_cols <- c("#C04037","#266566")
+  # Brain - Cerebellum - Heart - Kidney - Liver - Ovary - Testis
+  tissue_evo_cols <- c("#3698C7","#32CCFF","#AE1319","#CB992B","#339900","#CC3399","#FF6600")
+  # "Adipose Tissue"      "Adrenal Gland"       "Blood Vessel"        "Bladder"             "Brain"              
+  # "Breast"              "Skin"                "Blood"               "female_reproductive" "digestive_system"    "Heart"              
+  # "Kidney"              "Liver"               "Lung"                "Salivary Gland"      "Muscle"              "Nerve"              
+  # "Pancreas"            "Pituitary"           "Spleen"              "Thyroid"             "male_reproductive"
+  tissue_gtex_cols <- c("#FECE98","#98EEA0","#FE7F90","#CF7F89","#F4F69F",
+                        "#46CEC9","#7A76F8","#FD19B7","#FE5AF9","#CA9865","#6B1995",
+                        "#49FFC3","#A9BB73","#9BFF52","#9ABC8D","#A9A7FA","#F2CE3E",
+                        "#995A3D","#ABFFA1","#7A8B60","#226E2C","#A9A9A9")
+  # healthy tissue - cancer cell line - cell line 
+  tissue_r2_cols <- c("#F50021","#F300ED","#23EC3D","#1400F5")
+  
+  tissue_cols <- c(tissue_tumor_cols,tissue_r2_cols,tissue_gtex_cols,tissue_evo_cols)
+  
+  
+  #"EVO"  "GTEX" "PMC"  "R2"   "SJ"
+  batch_cols <- c("#7AD151FF","#6EA3D1","#FE9A2F","#1675B6","#B71238")
+  
+```
+
+## FP target genes
+
+```{r }
+picked_genes <- fp_target_genes$gene_id
+
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% picked_genes),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+```
+
+```{r create heatmap}
+
+plotname = "RMS_fp_target.pdf"
+
+hm_list <- list()
+ha_list <- list()
+
+for (i in 1:length(tissue_types)) {
+  hm = heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_cohort[which(meta_cohort$condition == tissue_types[i]),]$sample_id)]
+  hm_list[[tissue_types[i]]] = hm
+}
+# Create column annotation metadata
+annot_col <- as.data.frame(meta_cohort[, c("condition","batch","sample_id")])
+index <- order(match(meta_cohort$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+rownames(annot_col) <- colnames(heatmap_matrix)
+annot_col$sample_id <- NULL
+
+anno_cols <- list(condition = setNames(tissue_cols,c(unique(rms_fp_cohort$condition),
+                                                unique(rms_fn_cohort$condition),
+                                                unique(r2_cohort$condition),
+                                                unique(gtex_cohort$condition),
+                                                levels(evo_cohort$condition))),
+                  batch = setNames(batch_cols,c("EVO","GTEX","PMC","R2","SJ")))
+
+for (i in 1:length(tissue_types)) {
+  ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col[which(row.names(annot_col) %in% colnames(hm_list[[i]])),],
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+  ha_list[[tissue_types[i]]] = ha
+}
+
+breaks <- seq(0, 3, length.out = 100)
+
+chm_rms <- ComplexHeatmap::Heatmap(matrix = hm_list[[1]],
+                          # Hide names
+                          top_annotation = ha_list[[1]],
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_list <- list()
+
+for (i in 2:length(tissue_types)) {
+  print(tissue_types[i])
+  chm = ComplexHeatmap::Heatmap(matrix = hm_list[[i]],
+                          # Hide names
+                          top_annotation = ha_list[[i]],
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+  chm_list[[tissue_types[i]]] = chm
+}
+
+pdf(file = paste(basedir,"results","quantification","figures","heatmaps",plotname, sep = "/"), width = 12, height = 6)
+
+ComplexHeatmap::draw(chm_rms+chm_list[[1]]+chm_list[[2]]+chm_list[[3]]+
+                       chm_list[[4]]+chm_list[[5]]+chm_list[[6]]+chm_list[[7]]+
+                       chm_list[[8]]+chm_list[[9]]+chm_list[[10]]+chm_list[[11]]+
+                       chm_list[[12]]+chm_list[[13]]+chm_list[[14]]+chm_list[[15]]+
+                       chm_list[[16]]+chm_list[[17]] +chm_list[[18]]+chm_list[[19]]+
+                       chm_list[[20]]+chm_list[[21]]+chm_list[[22]]+chm_list[[23]]+chm_list[[24]]+
+                       chm_list[[25]]+chm_list[[26]]+chm_list[[27]]+chm_list[[28]]+chm_list[[29]]+chm_list[[30]]+
+                       chm_list[[31]]+chm_list[[32]]+chm_list[[33]]+chm_list[[34]],
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(0.5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+```
+
+## Trio enr heatmap
+
+```{r }
+combined_enr_genes <- c(combined_pass_canon[which(combined_pass_canon$pass == T & combined_pass_canon$selected == T),]$gene_id, combined_pass_novel[which(combined_pass_novel$pass == T),]$gene_id)
+fn_enr_genes <- c(fn_pass_canon[which(fn_pass_canon$pass == T & fn_pass_canon$selected == T),]$gene_id,
+                  fn_pass_novel[which(fn_pass_novel$pass == T),]$gene_id)
+fp_enr_genes <- c(fp_pass_canon[which(fp_pass_canon$pass == T & fp_pass_canon$selected == T),]$gene_id,
+                  fp_pass_novel[which(fp_pass_novel$pass == T),]$gene_id)
+
+picked_genes <- unique(c(combined_enr_genes,fp_enr_genes,fn_enr_genes))
+
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% picked_genes),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+```
+
+```{r create heatmap}
+
+plotname = "RMS_enrichment_strategies.pdf"
+
+hm_list <- list()
+ha_list <- list()
+
+for (i in 1:length(tissue_types)) {
+  hm = heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_cohort[which(meta_cohort$condition == tissue_types[i]),]$sample_id)]
+  hm_list[[tissue_types[i]]] = hm
+}
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta_cohort[, c("condition","batch","sample_id")])
+index <- order(match(meta_cohort$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+rownames(annot_col) <- colnames(heatmap_matrix)
+annot_col$sample_id <- NULL
+
+anno_cols <- list(condition = setNames(tissue_cols,c(unique(rms_fp_cohort$condition),
+                                                unique(rms_fn_cohort$condition),
+                                                unique(r2_cohort$condition),
+                                                unique(gtex_cohort$condition),
+                                                levels(evo_cohort$condition))),
+                  batch = setNames(batch_cols,c("EVO","GTEX","PMC","R2","SJ")))
+
+for (i in 1:length(tissue_types)) {
+  ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col[which(row.names(annot_col) %in% colnames(hm_list[[i]])),],
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+  ha_list[[tissue_types[i]]] = ha
+}
+
+# Create row annotation dataframe that matches the class of the gene ID located in our
+annot_row <-
+  data.frame(gene_id <- row.names(heatmap_matrix)) %>%
+  dplyr::mutate(group = ifelse(gene_id %in% fp_enr_genes & 
+                                 gene_id %in% fn_enr_genes & 
+                                 gene_id %in% combined_enr_genes , "combined",
+                               ifelse(gene_id %in% fp_enr_genes,"FP",
+                                      ifelse(gene_id %in% fn_enr_genes,"FN","combined"))),
+                type = ifelse(grepl("MSTRG",gene_id),"novel","canon")) %>%
+  dplyr::mutate(group = factor(group, levels = c("combined","FP","FN")),
+                type = factor(type, levels = c("canon","novel"))) %>%
+  dplyr::select(group,type)
+
+# same as column annotation, the DF requires row names
+rownames(annot_row) <- row.names(heatmap_matrix)
+
+# Connect the values of the row annotation to the colours
+row_cols <-
+  list(group = setNames(c("tan","#C04037","#266566"),levels(annot_row$group)),
+       type = setNames(c("#A5562F","#6DAED3"),levels(annot_row$type)))
+
+ha_row <-
+  ComplexHeatmap::HeatmapAnnotation(
+    df = annot_row,
+    show_annotation_name = F,
+    which = "row",
+    col = row_cols
+  )
+
+breaks <- seq(0, 3, length.out = 100)
+
+chm_rms <- ComplexHeatmap::Heatmap(matrix = hm_list[[1]],
+                          # Hide names
+                          top_annotation = ha_list[[1]],
+                          left_annotation = ha_row,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  split = annot_row$group,
+  use_raster = T,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_list <- list()
+
+for (i in 2:length(tissue_types)) {
+  print(tissue_types[i])
+  chm = ComplexHeatmap::Heatmap(matrix = hm_list[[i]],
+                          # Hide names
+                          top_annotation = ha_list[[i]],
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  split = annot_row$group,
+  use_raster = T,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+  chm_list[[tissue_types[i]]] = chm
+}
+
+pdf(file = paste(basedir,"results","quantification","figures","heatmaps",plotname, sep = "/"), width = 14, height = 8)
+
+ComplexHeatmap::draw(chm_rms+chm_list[[1]]+chm_list[[2]]+chm_list[[3]]+
+                       chm_list[[4]]+chm_list[[5]]+chm_list[[6]]+chm_list[[7]]+
+                       chm_list[[8]]+chm_list[[9]]+chm_list[[10]]+chm_list[[11]]+
+                       chm_list[[12]]+chm_list[[13]]+chm_list[[14]]+chm_list[[15]]+
+                       chm_list[[16]]+chm_list[[17]] +chm_list[[18]]+chm_list[[19]]+
+                       chm_list[[20]]+chm_list[[21]]+chm_list[[22]]+chm_list[[23]]+chm_list[[24]]+
+                       chm_list[[25]]+chm_list[[26]]+chm_list[[27]]+chm_list[[28]]+chm_list[[29]]+chm_list[[30]]+
+                       chm_list[[31]]+chm_list[[32]]+chm_list[[33]]+chm_list[[34]],
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(0.5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+```
+
+
+## FP enriched target genes
+
+```{r }
+
+picked_genes <- fp_target_genes %>%
+  dplyr::filter(gene_id %in% c(fp_pass_canon[which(fp_pass_canon$pass == T),]$gene_id,
+                               fn_pass_canon[which(fn_pass_canon$pass == T),]$gene_id,
+                               combined_pass_canon[which(combined_pass_canon$pass == T),]$gene_id))
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% picked_genes$gene_id),]
+heatmap_matrix <- na.omit(heatmap_matrix)
+
+```
+
+```{r create heatmap}
+
+plotname = "RMS_fp_target_enriched.pdf"
+
+# Gene symbols instead of gene IDs
+# Use match to get the order of gene_name corresponding to gene_id
+
+# Set the row names of the matrix to gene_name
+rownames(heatmap_matrix) <- tx_df$gene_name[match(row.names(heatmap_matrix), tx_df$gene_id)]
+
+hm_list <- list()
+ha_list <- list()
+
+for (i in 1:length(tissue_types)) {
+  hm = heatmap_matrix[,which(colnames(heatmap_matrix) %in% meta_cohort[which(meta_cohort$condition == tissue_types[i]),]$sample_id)]
+  hm_list[[tissue_types[i]]] = hm
+}
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta_cohort[, c("condition","batch","sample_id")])
+index <- order(match(meta_cohort$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+rownames(annot_col) <- colnames(heatmap_matrix)
+annot_col$sample_id <- NULL
+
+anno_cols <- list(condition = setNames(tissue_cols,c(unique(rms_fp_cohort$condition),
+                                                unique(rms_fn_cohort$condition),
+                                                unique(r2_cohort$condition),
+                                                unique(gtex_cohort$condition),
+                                                levels(evo_cohort$condition))),
+                  batch = setNames(batch_cols,c("EVO","GTEX","PMC","R2","SJ")))
+
+for (i in 1:length(tissue_types)) {
+  ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col[which(row.names(annot_col) %in% colnames(hm_list[[i]])),],
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm")
+)
+  ha_list[[tissue_types[i]]] = ha
+}
+
+breaks <- seq(0, 3, length.out = 100)
+
+chm_last <- ComplexHeatmap::Heatmap(matrix = hm_list[[length(tissue_types)]],
+                          # Hide names
+                          top_annotation = ha_list[[length(tissue_types)]],
+  show_row_names = T,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+
+chm_list <- list()
+
+for (i in 1:(length(tissue_types)-1)) {
+  print(tissue_types[i])
+  chm = ComplexHeatmap::Heatmap(matrix = hm_list[[i]],
+                          # Hide names
+                          top_annotation = ha_list[[i]],
+  show_row_names = F,
+  show_row_dend = F,
+  show_heatmap_legend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  use_raster = F,
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  )
+  chm_list[[tissue_types[i]]] = chm
+}
+
+pdf(file = paste(basedir,"results","quantification","figures","heatmaps",plotname, sep = "/"), width = 14, height = 6)
+
+ComplexHeatmap::draw(chm_list[[1]]+chm_list[[2]]+chm_list[[3]]+
+                       chm_list[[4]]+chm_list[[5]]+chm_list[[6]]+chm_list[[7]]+
+                       chm_list[[8]]+chm_list[[9]]+chm_list[[10]]+chm_list[[11]]+
+                       chm_list[[12]]+chm_list[[13]]+chm_list[[14]]+chm_list[[15]]+
+                       chm_list[[16]]+chm_list[[17]] +chm_list[[18]]+chm_list[[19]]+
+                       chm_list[[20]]+chm_list[[21]]+chm_list[[22]]+chm_list[[23]]+chm_list[[24]]+
+                       chm_list[[25]]+chm_list[[26]]+chm_list[[27]]+chm_list[[28]]+chm_list[[29]]+chm_list[[30]]+
+                       chm_list[[31]]+chm_list[[32]]+chm_list[[33]]+chm_list[[34]]+chm_last,
+                     heatmap_legend_side = "bottom",
+                     ht_gap = unit(0.5, "mm"),
+                     annotation_legend_side = "right",
+                     legend_grouping = "original")
+
+dev.off()
+
+```
+

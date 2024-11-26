@@ -1,0 +1,285 @@
+---
+title: "DeltaTE"
+author: "JD"
+date: "2024-06-28"
+output: html_document
+---
+
+```{r libraries}
+
+library(dplyr)
+library(magrittr)
+library(rtracklayer)
+library(Biostrings)
+library(GenomicFeatures)
+library(BSgenome)
+library(Biostrings)
+```
+
+```{r parameters}
+
+base_dir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+ribo_dir = paste(base_dir,"02_riboseq" , sep = "/")
+te_dir = paste(base_dir,"04_deltaTE" , sep = "/")
+save_dir_base = paste(te_dir,"results",sep = "/")
+
+```
+
+```{r}
+
+orf_df <- read.delim("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/results/orf_reannotation/RMS_harmonised_ORF_table.csv", sep = ",") %>%
+  dplyr::filter(translated == T)
+
+transl_orfs <- orf_df$orf_id
+
+price_gtf <- rtracklayer::import(con = paste(ribo_dir,"analysis/price",
+                                             "RMS_merged_price_reduced_ORFs.gtf", 
+                                             sep = "/"))
+orfquant_gtf <- rtracklayer::import(con = paste(ribo_dir,"analysis/ORFquant/RMS_merged_psites",
+                                                "RMS_merged_psites_Detected_ORFs.gtf", 
+                                                sep = "/"))
+
+merged_gtf <- c(orfquant_gtf,price_gtf)
+
+```
+
+# Salmon GTF
+
+Use Damons claude solution
+
+```{r check counts for EWS and NBL}
+
+rms_counts <- rtracklayer::import("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/analysis/ORFquant/RMS_merged_psites/RMS_merged_psites_Detected_ORFs.gtf") %>%
+  as.data.frame(., row.names = NULL) %>%
+  dplyr::mutate(uniq_id = paste(ORF_id, P_sites, sep=";")) %>%
+  dplyr::mutate(ORF_id = stringr::str_split_i(uniq_id,pattern = ";", i = 1)) %>%
+  dplyr::select(ORF_id,P_sites) %>%
+  dplyr::distinct() %>%
+  dplyr::pull(ORF_id) %>%
+  table() %>%
+  as.data.frame() %>%
+  dplyr::rename(ORF_id = ".")
+
+nbl_counts <- rtracklayer::import("/hpc/pmc_vanheesch/projects/Damon/Neuroblastoma_neoantigens/02_riboseq_analysis/ribo_nbl_merged/data/processed/orfquant_merged_pipeline/ORFquant/nbl_orfquant_merged/nbl_orfquant_merged_Detected_ORFs.gtf") %>%
+  as.data.frame(., row.names = NULL) %>%
+  dplyr::mutate(uniq_id = paste(ORF_id, P_sites, sep=";")) %>%
+  dplyr::mutate(ORF_id = stringr::str_split_i(uniq_id,pattern = ";", i = 1)) %>%
+  dplyr::select(ORF_id,P_sites) %>%
+  dplyr::distinct() %>%
+  dplyr::pull(ORF_id) %>%
+  table() %>%
+  as.data.frame() %>%
+  dplyr::rename(ORF_id = ".")
+
+ews_counts <- rtracklayer::import("/hpc/pmc_vanheesch/projects/Luuk/EwingSarcomaProject/riboseq_analysis/analysis/final_set/ORFquant/EwS_Riboseq_Detected_ORFs.gtf") %>%
+  as.data.frame(., row.names = NULL) %>%
+  dplyr::mutate(uniq_id = paste(ORF_id, P_sites, sep=";")) %>%
+  dplyr::mutate(ORF_id = stringr::str_split_i(uniq_id,pattern = ";", i = 1)) %>%
+  dplyr::select(ORF_id,P_sites) %>%
+  dplyr::distinct() %>%
+  dplyr::pull(ORF_id) %>%
+  table() %>%
+  as.data.frame() %>%
+  dplyr::rename(ORF_id = ".")
+
+table(rms_counts$Freq)
+table(nbl_counts$Freq)
+table(ews_counts$Freq)
+
+```
+
+```{r}
+# Find non-unique ORFs
+merged_gtf$unique_id <- paste(merged_gtf$ORF_id, merged_gtf$P_sites, sep=";")
+
+
+
+orf_counts <- data.frame(uniq_id = merged_gtf$unique_id) %>%
+  dplyr::mutate(ORF_id = stringr::str_split_i(uniq_id,pattern = ";", i = 1)) %>%
+  dplyr::distinct() %>%
+  dplyr::pull(ORF_id) %>%
+  table() %>%
+  as.data.frame() %>%
+  dplyr::rename(ORF_id = ".")
+
+orf_id_order = data.frame(uniq_id = merged_gtf$unique_id) %>%
+  dplyr::mutate(ORF_id = stringr::str_split_i(uniq_id,pattern = ";", i = 1)) %>%
+  dplyr::left_join(orf_counts, by = "ORF_id")
+
+# Fix combined ORFs
+merged_gtf$unique_id <- paste(merged_gtf$ORF_id, merged_gtf$P_sites, sep="_")
+
+# Step 2: Split the GRanges object
+split_gr <- split(merged_gtf, merged_gtf$unique_id)
+
+# Step 3 (optional): Unlist to get a single GRanges object
+disentangled_gr <- unlist(split_gr)
+
+
+# Create txdb based on merged GTF
+txdb <- txdbmaker::makeTxDbFromGRanges(merged_gtf)
+
+txdb <- txdbmaker::makeTxDbFromGFF(file = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/04_deltaTE/analysis/salmon_index/tx_cds.gtf",
+                                   format = "gtf")
+
+check_rms_gtf <- rtracklayer::import("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/04_deltaTE/analysis/salmon_index/tx_cds.gtf")
+
+check_rms_gtf_df <- as.data.frame(check_rms_gtf)
+
+# Extract CDS regions
+cds_regions <-GenomicFeatures::cds(txdb)
+
+```
+
+
+
+Combine PRICE & ORFquant output into single GTF for salmon quantification - CDS
+
+Think of:
+Concatenate ORF sequences from different exons
+Think of +/- strandedness
+
+```{r}
+
+merged_gtf_uniq <- unique(merged_gtf)
+
+merged_gtf_uniq <- unlist(split(merged_gtf, mcols(merged_gtf)$ORF_id))
+
+# Extract strand information
+orf_strand <- as.data.frame(merged_gtf_uniq, row.names = NULL) %>%
+  dplyr::select(ORF_id,strand) %>%
+  dplyr::distinct()
+
+genome_2bit <- rtracklayer::TwoBitFile("/hpc/pmc_vanheesch/shared_resources/GENOMES/Homo_sapiens.GRCh38/102/Homo_sapiens.GRCh38.dna.primary_assembly.2bit")
+
+# Extract the genomic sequence for each ORF
+orf_sequences <- Biostrings::getSeq(genome_2bit, head(merged_gtf_uniq, n = 1000))
+
+merged_gtf_uniq_df <- as.data.frame(merged_gtf_uniq,row.names = NULL) %>%
+  dplyr::select(ORF_id,seqnames,start, end, strand) %>%
+  dplyr::mutate(dna_names = paste(ORF_id,seqnames,start, end, strand,sep =";"))
+
+# Name the sequences by the orf_id
+names(orf_sequences) <- head(merged_gtf_uniq_df$dna_names, n = 1000)
+
+
+
+#Claude
+dna_df <- data.frame(
+  dna_names = names(orf_sequences),
+  sequence = as.character(orf_sequences),
+  stringsAsFactors = FALSE
+) %>%
+  dplyr::mutate(ORF_id = stringr::str_split_i(dna_df$dna_names, pattern = ";", i = 1),
+                seqnames = factor(stringr::str_split_i(dna_df$dna_names, pattern = ";", i = 2),
+                                  levels = levels(seqnames(merged_gtf))),
+                start = as.integer(stringr::str_split_i(dna_df$dna_names, pattern = ";", i = 3)),
+                end = as.integer(stringr::str_split_i(dna_df$dna_names, pattern = ";", i = 4)),
+                strand = factor(stringr::str_split_i(dna_df$dna_names, pattern = ";", i = 5),
+                                levels = c("+","-"))) %>%
+  dplyr::select(-dna_names) %>%
+  arrange(ORF_id, start)  # Sort by ORF ID and start position
+
+# Group by ORF ID and concatenate sequences in the correct order
+result <- merged_df %>%
+  group_by(ORF_id) %>%
+  summarise(
+    sequence = paste(sequence, collapse = ""),
+    strand = first(strand)
+  ) %>%
+  mutate(
+    sequence = ifelse(strand == "-",
+                      as.character(reverseComplement(DNAString(sequence))),
+                      sequence)
+  )
+
+# Convert back to DNAStringSet
+final_dna_set <- DNAStringSet(result$sequence)
+names(final_dna_set) <- result$orf_id
+
+```
+
+Combine PRICE & ORFquant output into single GTF for salmon quantification
+
+```{r }
+
+orf_df <- read.delim("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/02_riboseq/results/orf_reannotation/RMS_harmonised_ORF_table.csv", sep = ",") %>%
+  dplyr::filter(translated == T)
+
+transl_orfs <- orf_df$orf_id
+
+price_gtf <- rtracklayer::import(con = paste(ribo_dir,"analysis/price",
+                                             "RMS_merged_price_reduced_ORFs.gtf", 
+                                             sep = "/"))
+orfquant_gtf <- rtracklayer::import(con = paste(ribo_dir,"analysis/ORFquant/RMS_merged_psites",
+                                                "RMS_merged_psites_Detected_ORFs.gtf", 
+                                                sep = "/"))
+
+merged_gtf <- c(orfquant_gtf,price_gtf)
+
+merged_gtf <- merged_gtf[which(merged_gtf$ORF_id %in% transl_orfs),]
+
+canonical_orf_ind <- which(merged_gtf$type == "CDS" & is.na(merged_gtf$ORF_id))
+
+# Set orf_id for these CDS regions as the 'transcriptID_CDS'
+merged_gtf[canonical_orf_ind,]$orf_id <- paste0(merged_gtf[canonical_orf_ind,]$transcript_id, "_CDS")
+merged_gtf_df <- data.frame(merged_gtf) %>%
+  dplyr::filter(type == "CDS" & ORF_id %in% transl_orfs) %>%
+  dplyr::select(-P_sites,-ORF_pct_P_sites,-ORF_pct_P_sites_pN,-ORFs_pM,-ID) %>%
+  dplyr::mutate(transcript_id = ORF_id)
+
+rtracklayer::export(object = merged_gtf, con = paste(te_dir, "analysis/salmon_index","RMS_CDS.gtf",
+                                                     sep = "/"))
+
+```
+
+```{r load data}
+
+rna_counts <- rbind(read.delim(paste(te_dir,
+                                     "analysis/p_site_quantification",
+                                     "RMS_deltaTE_RNAseq_psites.txt", sep = "/"),
+                               sep = " "),
+                    read.delim(paste(te_dir,
+                                     "analysis/p_site_quantification",
+                                     "RMS_PRICE_deltaTE_RNAseq_psites.txt", sep = "/"),
+                               sep = " "))
+
+ribo_counts <- rbind(read.delim(paste(ribo_dir,
+                                      "analysis/p_site_quantification",
+                                      "RMS_orfquant_merged_quant_psites.txt",
+                                      sep = "/"), 
+                                sep = " "), 
+                     read.delim(paste(ribo_dir,
+                                      "analysis/price_p_site_quantification",
+                                      "RMS_price_merged_quant_psites.txt", 
+                                      sep = "/"),
+                                sep = " ")) %>%
+  .[,grepl("ORG",colnames(.))]
+
+metadata <- data.frame(sample_id = c(gsub("X","",colnames(rna_counts)),
+                                     colnames(ribo_counts)
+                                     ),
+                       sequence_type = c(rep("RNA",length(colnames(rna_counts))),
+                                         rep("RIBO",length(colnames(ribo_counts)))
+                                         ),
+                       condition = c(rep("FP-RMS",12),
+                                    rep("FN-RMS",11),
+                                    "FP-RMS",
+                                    rep("FP-RMS",16),
+                                    rep("FN-RMS",15))
+)
+
+```
+
+# Check GTF
+
+```{r}
+
+# Start position
+t1 <- rtracklayer::import("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/04_deltaTE/analysis/RMS_CDS.gtf")
+
+# First fix
+cds_ref <- rtracklayer::import("/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis/04_deltaTE/analysis/salmon_index/tx_cds.gtf")
+
+
+```
