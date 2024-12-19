@@ -1,0 +1,153 @@
+---
+title: "Strict Neoantigens"
+author: "JD"
+date: "2023-10-16"
+output: html_document
+---
+
+```{r libraries}
+library(DESeq2)
+library(ggplot2)
+```
+
+```{r parameters}
+savedir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/netmhcpan_single/results/figures"
+dds_dir = "/hpc/pmc_vanheesch/projects/Jip/rms_analysis/01_rnaseq/results/quantification/"
+
+# DDS objects
+evo_dds = readRDS(paste0(dds_dir,"EVO_DESEQ_tissue.RDS"))
+gtex_dds = readRDS(paste0(dds_dir,"GTEX_DESEQ_type.RDS"))
+tumor_dds = readRDS(paste0(dds_dir,"RMS_DESEQ_combined_subtype.RDS"))
+atlas_dds = readRDS(paste0(dds_dir,"ATLAS_DESEQ_condition.RDS"))
+
+tumor_col = c("RMS"="#F9ECCE")
+# PMC - SJ - GTEx - EVO - ATLAS
+batch_cols <- c("#FE9A2F","#B71238","#6EA3D1","#7AD151FF","#1675B6")
+  # embryonal - alveolar - scRMS
+type_cols <- c("#D7182F","#19886A","#564D96")
+  # RMS - Brain - Cerebellum - Heart - Kidney - Liver - Kidney - Ovary - Testis
+tissue_evo_cols <- c("forebrain"="#3698C7",
+                     "hindbrain"="#32CCFF",
+                     "heart"="#AE1319",
+                     "liver"="#CB992B",
+                     "kidney"="#339900",
+                     "ovary"="#CC3399",
+                     "testis"="#FF6600")
+  # "RMS"                 "Adipose Tissue"      "Adrenal Gland"       "Blood Vessel"        "Bladder"             "Brain"              
+  # "Breast"              "Skin"                "Blood"               "female_reproductive" "digestive_system"    "Heart"              
+  # "Kidney"              "Liver"               "Lung"                "Salivary Gland"      "Muscle"              "Nerve"              
+  # "Pancreas"            "Pituitary"           "Spleen"              "Thyroid"             "male_reproductive"
+  tissue_gtex_cols <- c("Adipose Tissue"="#FECE98",
+                        "Adrenal Gland"="#98EEA0",
+                        "Blood Vessel"="#FE7F90",
+                        "Bladder"="#CF7F89",
+                        "Brain"="#F4F69F",
+                        "Breast"="#46CEC9",
+                        "Skin"="#7A76F8",
+                        "Blood"="#FD19B7",
+                        "Cervix Uteri"="#E1CEEA",
+                        "Colon"="#E1C6A9",
+                        "Esophagus"="#E1C6A9",
+                        "Fallopian Tube"="#FFE0E2",
+                        "Heart"="#6B1995",
+                        "Kidney"="#49FFC3",
+                        "Liver"="#A9BB73",
+                        "Lung"="#9BFF52",
+                        "Salivary Gland"="#9ABC8D",
+                        "Muscle"="#A9A7FA",
+                        "Nerve"="#F2CE3E",
+                        "Ovary"="#FFCCFD",
+                        "Pancreas"="#C6A293",
+                        "Pituitary"="#D0FFCB",
+                        "Small Intestine"="#A4A491",
+                        "Spleen"="#B4BEA6",
+                        "Stomach"="#FFEBCB",
+                        "Thyroid"="#82AE8A",
+                        "Uterus"="#FEA3FC",
+                        "Vagina"="#FE9BC6",
+                        "Prostate"="#ECECEC",
+                        "Testis"="#CFCFCF")
+  # RMS - healthy tissue - cancer cell line - cell line 
+  tissue_r2_cols <- c("#1400F5","#F50021","#F300ED")
+  # NBL - EPN - EWS - RMS - MBL - AML - T-ALL - B-ALL - ATRT - WT -- DO NOT CHANGE
+  tumor_cols <- c("NBL"="#000194","EPN"="#B458A6","EWS"="#F7A29F","RMS"="#F9ECCE",
+                  "MBL"="#D2AE33","AML"="#CC2441","T-ALL"="#A2DAD8","B-ALL"="#CDD8D7",
+                  "ATRT"="#E07729","WT"="#A9D547")
+
+```
+
+
+```{r functions}
+
+plot_gene <- function(dds, gene,tissue_cols,intgroup) {
+  count_plot = plotCounts(dds = dds,gene = gene,intgroup = intgroup,normalized=T,returnData = T)
+  intgroup = sym(intgroup)
+  ggplot(data = count_plot,mapping = aes(x = !!intgroup, y = count, col = !!intgroup)) +
+    geom_boxplot() +
+    ggbeeswarm::geom_quasirandom() + 
+    scale_color_manual(values = tissue_cols) +
+    scale_x_discrete(guide = guide_axis(angle = 45)) +
+    labs(title = gene, y = "norm count") +
+    theme_classic() +
+    theme(legend.position = "none")
+
+}
+
+plot_evo_gene <- function(dds, gene,tissue_cols) {
+  count_plot <- plotCounts(dds = dds,gene = gene,intgroup = c("fetal_tissue"),normalized=T,returnData = T)
+  
+  ggplot(data = count_plot,mapping = aes(x = fetal_tissue, y = count, col = fetal_tissue)) +
+    geom_boxplot() +
+    ggbeeswarm::geom_quasirandom() + 
+    scale_color_manual(values = tissue_cols) +
+    labs(title = gene, y = "norm count") +
+    scale_x_discrete(guide = guide_axis(angle = 45)) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    facet_grid(~fetal,scales = "free_x")
+
+}
+
+create_gene_count_overview <- function(gene_name,savedir) {
+  p_evo = plot_evo_gene(dds = evo_dds,
+                      gene = gene_name,
+                      tissue_cols = c(tumor_col,tissue_evo_cols))
+   p_nbl_type = plot_gene(dds = tumor_dds,
+                      gene = gene_name,
+                      tissue_cols = type_cols,
+                      intgroup = "condition")
+  p_gtex = plot_gene(dds = gtex_dds,
+                      gene = gene_name,
+                      tissue_cols = c(tumor_col,tissue_gtex_cols),
+                      intgroup = "type")
+  p_atlas = plot_gene(dds = atlas_dds,
+                      gene = gene_name,
+                      tissue_cols = c(tumor_col,tissue_r2_cols),
+                      intgroup = "condition")
+  ggsave(filename = paste(savedir,paste0(gene_name,"_counts.pdf"), sep = "/"),
+       plot = ggpubr::ggarrange(p_nbl_type,p_evo,p_gtex,p_atlas,nrow=1),
+       height = 6,
+       width = 16)
+
+}
+
+```
+
+```{r plotting}
+gene_name = "MSTRG.26303"
+
+count_plot <- plotCounts(dds = evo_dds,gene = gene_name,intgroup = c("fetal","tissue"),normalized=T,returnData = T) %>%
+   dplyr::mutate(fetal = ifelse(tissue == "RMS","RMS",levels(fetal)[fetal]))
+  
+  ggplot(data = count_plot,mapping = aes(x = tissue, y = count, col = tissue)) +
+    geom_boxplot() +
+    ggbeeswarm::geom_quasirandom() + 
+    scale_color_manual(values = c(tumor_col,tissue_evo_cols)) +
+    labs(title = gene_name, y = "norm count") +
+    scale_x_discrete(guide = guide_axis(angle = 45)) +
+    theme_classic() +
+    theme(legend.position = "none")  +
+    facet_grid(~fetal,scales = "free_x")
+  
+
+```

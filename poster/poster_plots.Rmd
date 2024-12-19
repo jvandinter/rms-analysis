@@ -1,0 +1,1515 @@
+---
+title: "Poster plots"
+author: "JD"
+date: "2024-05-21"
+output: html_document
+---
+
+```{r libraries}
+suppressPackageStartupMessages({
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(cowplot)
+library(ggpubr)
+library(DESeq2)
+library(factoextra)
+library(ComplexHeatmap)
+})
+```
+
+# Parameters
+
+```{r parameters}
+
+basedir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+rna_dir = paste(basedir,"01_rnaseq",sep = "/")
+ribo_dir = paste(basedir,"02_riboseq", sep = "/")
+save_dir = paste(basedir,"poster_plots/figures",sep="/")
+metadata_dir = paste(rna_dir,"documentation",sep="/")
+txome_gtf = paste(rna_dir,
+                  "analysis/rnaseq_pipeline/customannotation",
+                  "RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")
+tumor_type = "RMS"
+rds_loc = paste(rna_dir,"analysis","quantification", sep = "/")
+
+```
+
+# RMS TX count overview
+
+```{r load TXs}
+
+metadata <- read.delim(paste(rna_dir, "documentation/all_cohorts",
+                             "rms_meta_all_combined.csv",sep = "/"), sep = ",")
+
+meta_tumoroid <- data.frame(sample_id = 98:129,
+                            type = c(rep("FP-RMS",16),rep("FN-RMS",16)),
+                            sex = rep("Not Available",32),
+                            batch = "tumoroid",
+                            cohort = "RMS") %>%
+  dplyr::filter(!sample_id == 105)
+
+fn_samples <- c(metadata %>% 
+                  dplyr::filter(type == "FN-RMS") %>%
+                  dplyr::pull(sample_id),
+                meta_tumoroid %>% 
+                  dplyr::filter(type == "FN-RMS") %>% 
+                  dplyr::pull(sample_id))
+fp_samples <- c(metadata %>% 
+                  dplyr::filter(type == "FP-RMS") %>%
+                  dplyr::pull(sample_id),
+                meta_tumoroid %>% 
+                  dplyr::filter(type == "FP-RMS") %>% 
+                  dplyr::pull(sample_id))
+
+# Function to extract loci information from a stats file
+extract_loci_info <- function(file_path) {
+  # Read the file
+  lines <- readLines(file_path)
+  
+  # Extract the line with total loci information
+  total_loci_line <- lines[grepl("Query mRNAs", lines)]
+  total_loci_match <- stringr::str_extract(total_loci_line, "in\\s*\\d+\\s*loci")
+  total_loci <- as.numeric(stringr::str_extract(total_loci_match, "\\d+"))
+  
+  # Extract the line with novel loci information
+  novel_loci_line <- lines[grepl("Novel loci", lines)]
+  novel_loci <- as.numeric(stringr::str_extract(novel_loci_line, "\\d+"))
+  
+  # Return a list containing the extracted information
+  return(list(sample = basename(file_path), 
+                    total_loci = total_loci, 
+                    novel_loci = novel_loci))
+}
+
+# Define the root directory to search in
+root_directory <- "/hpc/pmc_vanheesch/projects/jvandinter/custom_transcriptomes/20221007_JD_RMS_ext/data/processed/gffcompare/"
+
+# Find all gffcompare .stats files in the directory and its subdirectories
+stats_files <- list.files(path = root_directory, pattern = "\\.stats$", full.names = TRUE, recursive = TRUE)
+stats_files <- stats_files[-c(95,96)]
+
+# Apply the extraction function to each file
+loci_info <- lapply(stats_files, extract_loci_info)
+
+# Convert the list to a data frame
+loci_info_df <- data.frame(do.call(rbind, loci_info))
+
+loci_info_df$sample <- unlist(loci_info_df$sample)
+loci_info_df$total_loci <- unlist(loci_info_df$total_loci)
+loci_info_df$novel_loci <- unlist(loci_info_df$novel_loci)
+
+loci_info_df <- loci_info_df %>%
+  dplyr::mutate(sample = dplyr::case_when(grepl("^PM", sample) ~ gsub(".stats", "",gsub("-PM.*","",sample)),
+                                   .default = gsub(".stats", "",sample)))
+
+# Calculate non-novel loci
+long_df <- loci_info_df %>%
+  dplyr::mutate(annotated_loci = total_loci - novel_loci,
+         sample = factor(sample, levels = loci_info_df[order(loci_info_df$novel_loci),]$sample),
+         batch = dplyr::case_when(grepl("^SJ",sample) ~ "SJ",
+                                        grepl("^PM", sample) ~ "PMC",
+                                        TRUE ~ "tumoroid")) %>%
+  dplyr::mutate(condition = dplyr::case_when(sample %in% fp_samples ~ "FP-RMS",
+                                      sample %in% fn_samples ~ "FN-RMS", 
+                                      .default = "FN-RMS"),
+                type = dplyr::case_when(batch %in% c("SJ","PMC") ~ "TIS",
+                                        batch == "tumoroid" ~ "ORG",
+                                        TRUE ~ "ORG")) %>%
+  tidyr::pivot_longer(cols = tidyr::ends_with("loci"),
+                      names_to = "loci_type",
+                      values_to = "count") %>%
+  dplyr::filter(!loci_type == "total_loci")
+
+# Create the stacked bar chart
+p1 <- ggplot(long_df, aes(x = sample, y = count, fill = loci_type, color = loci_type)) +
+  geom_bar(stat = "identity", position = "stack", width = 1.5) +
+  facet_grid(. ~ condition, scales = "free_x",space = "free") +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank(),panel.border = element_blank(), strip.background = element_blank(), axis.line.x = element_blank(), strip.text = element_text(size = 5)) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_color_brewer(palette = "Set2") +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "Sample", y = "Number of Loci", fill = "Locus Type", title = "Assembled loci per sample")
+
+
+```
+
+## plot
+
+```{r create TX count plots}
+# Create the stacked bar chart
+ggplot(long_df, aes(x = sample, y = count, fill = loci_type,colour = loci_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(. ~ type, scales = "free_x",space = "free") +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank(),panel.border = element_blank(), strip.background = element_blank(), axis.line.x = element_blank(), strip.text = element_text(size = 5)) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_color_brewer(palette = "Set2") +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "Sample", y = "Number of Loci", fill = "Locus Type", title = "Assembled loci per sample") 
+
+ggsave(filename = "gffcompare_loci_type.pdf",
+       device = "pdf",
+       path = paste(save_dir,"assembly", sep = "/"),
+       width = 6,
+       height = 4)
+```
+
+```{r load RMS TXome}
+
+gtf_df <- rtracklayer::import(txome_gtf) %>% as.data.frame()
+
+# Parse some of the biotypes in their own group
+biotype_data <- gtf_df %>% 
+  dplyr::filter(type == "transcript") %>%
+  dplyr::filter(grepl("^MSTRG",gene_id)) %>%
+  dplyr::select(gene_id, gene_biotype) %>%
+  dplyr::mutate(gene_biotype = "Unannotated") %>%
+  dplyr::distinct()
+
+p2 <- ggplot(biotype_data, aes(x = gene_biotype, fill = gene_biotype)) +
+  geom_bar(stat = "count") +
+  geom_text(stat='count', aes(label = after_stat(count)), vjust = 0, nudge_y = 100, size = 6) +
+  scale_fill_manual(values = "#5F187FFF") +
+  scale_x_discrete(guide = guide_axis(angle = 0)) +
+  labs(x = "Gene Biotype", y = "Count") +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank(),panel.border = element_blank(), strip.background = element_blank(), axis.line.x = element_blank(), strip.text = element_text(size = 5))
+
+```
+
+```{r combined plot}
+
+ggpubr::ggarrange(p1,p2)
+
+ggsave(filename = "gffcompare_loci_novel_genes.svg",
+       device = "svg",
+       path = paste(save_dir,"assembly", sep = "/"),
+       width = 9,
+       height = 4)
+
+```
+
+# Enriched RMS heatmap
+
+```{r colors + name}
+filename = "RMS_enriched_sep_type_biotype.pdf"
+plotname = paste(save_dir,"heatmap",filename,sep = "/")
+
+heatmap_cols <- colorRampPalette(rev(RColorBrewer::brewer.pal(n = 5, name = "RdYlBu")))(100)
+
+cohort_colors <- c("RMS" = "firebrick3",
+                   "EWS" = "green4",
+                   "OS" = "indianred3",
+                   "WT" = "aquamarine3",
+                   "ATRT" = "darkorange3",
+                   "MBL" = "darkgoldenrod3",
+                   "NBL" = "blue3",
+                   "EPN" = "peachpuff3",
+                   "AML" = "hotpink3",
+                   "T-ALL" = "violetred3",
+                   "B-ALL" = "plum3",
+                   "EVO-DEVO-fetal" = "#2C6C5E",
+                   "EVO-DEVO-postbirth" = "#7AD151FF",
+                   "R2_atlas" = "#1675B6",
+                   "GTEX" = "#6EA3D1")
+
+fusion_colors <- c("FP-RMS" = "#C04037","FN-RMS"="#266566","RMS"="#9088dC")
+
+biotype_colors = c("lncRNA" = "gold",
+                   "protein_coding" = "purple4",
+                   "stringtie" = "cyan3")
+
+
+```
+
+## enrichment
+
+```{r enriched genes for heatmap}
+
+fp_table <- read.delim(paste(rna_dir,
+                                "results/quantification/",
+                                "RMS-FP_enrichment.csv", sep="/"), 
+                          sep = ",")
+fp_enriched <- fp_table %>% 
+                      dplyr::filter(enriched == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+fn_table <- read.delim(paste(rna_dir, 
+                                "results/quantification/",
+                                "RMS-FN_enrichment.csv", sep="/"), 
+                          sep = ",")
+fn_enriched <- fn_table %>% 
+                      dplyr::filter(enriched == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+rms_table <- read.delim(paste(rna_dir, "results/quantification/",
+                                 "RMS_enrichment.csv", sep="/"), 
+                           sep = ",")
+rms_enriched <- rms_table %>% 
+                      dplyr::filter(enriched == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+enriched_genes <- c(fp_enriched, 
+                    rms_enriched,
+                    fn_enriched) %>% unique()
+
+```
+
+## counts & meta
+
+```{r run once, eval=F}
+
+dds <- readRDS(file = paste(rna_dir,"analysis/quantification","RMS_all_cohorts_for_plotting.RDS", sep = "/"))
+dds <- DESeq2::estimateSizeFactors(dds)
+vsd <- DESeq2::vst(dds,blind = T)
+heatmap <- t(scale(t(assay(vsd))))
+saveRDS(heatmap, file = paste(rna_dir,"analysis/quantification","RMS_heatmap_all_cohorts.RDS", sep = "/"))
+
+```
+
+```{r counts & meta}
+
+heatmap <- readRDS(file = paste(rna_dir,"analysis/quantification","RMS_heatmap_all_cohorts.RDS", sep = "/"))
+
+meta <- read.delim(file = paste(rna_dir,"documentation/all_cohorts",
+                                "rms_meta_all_combined.csv",
+                                sep = "/"), sep = ",")
+
+unique(meta$type)
+
+```
+
+## HM annotation
+
+```{r heatmap}
+
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% enriched_genes),]
+
+breaks <- seq(0, 3, length.out = 100)
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta[, c("cohort","sample_id")])
+index <- order(match(meta$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+annot_col$sample_id <- NULL
+annot_col$cohort <- factor(annot_col$cohort, levels = names(cohort_colors))
+
+anno_cols <- list(cohort = setNames(cohort_colors,levels(annot_col$cohort)))
+
+ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col,
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+annot_row <- data.frame(gene_id = rownames(heatmap_matrix)) %>%
+  dplyr::left_join(fp_table[,c("gene_id","gene_biotype")]) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(type = dplyr::case_when(gene_id %in% fp_enriched &
+                                        !(gene_id %in% fn_enriched) ~ "FP-RMS",
+                                        gene_id %in% fn_enriched &
+                                        !(gene_id %in% fp_enriched) ~ "FN-RMS",
+                                        gene_id %in% fn_enriched &
+                                        gene_id %in% fp_enriched ~ "RMS",
+                                        TRUE ~ "RMS")) %>%
+  dplyr::mutate(type = factor(type, levels = names(fusion_colors)),
+                gene_biotype = factor(gene_biotype, levels = names(biotype_colors)),
+                type_biotype = factor(paste(type,gene_biotype, sep = "_"), 
+                                      levels = c(paste(rep("FP-RMS",3),
+                                                       c("protein_coding","lncRNA","stringtie"),
+                                                       sep ="_"),
+                                                 paste(rep("RMS",3),
+                                                       c("protein_coding","lncRNA","stringtie"),
+                                                       sep ="_"),
+                                                 paste(rep("FN-RMS",3),
+                                                       c("protein_coding","lncRNA","stringtie"),
+                                                       sep ="_")))) %>%
+  tibble::column_to_rownames(var = "gene_id")
+
+anno_row_cols <- list(type = setNames(fusion_colors,
+                                      levels(annot_row$type)),
+                      gene_biotype = setNames(biotype_colors,
+                                              levels(annot_row$gene_biotype)),
+                      type_biotype = setNames(rep("white",9),levels(annot_row$type_biotype)))
+
+ha_row <- ComplexHeatmap::HeatmapAnnotation(
+  df = annot_row,
+  which = "row",
+  col = anno_row_cols,
+  show_legend = c(T,T,F),
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+```
+
+## plotting
+
+```{r plot}
+
+pdf(file = plotname,
+    width = 10,
+    height = 8)
+ComplexHeatmap::draw(
+  ComplexHeatmap::Heatmap(matrix = heatmap_matrix,
+                          # Hide names
+                        top_annotation = ha,
+                        left_annotation = ha_row,
+                        column_split = annot_col$cohort,
+                        row_split = annot_row$type_biotype,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  cluster_row_slices = F,
+  cluster_column_slices = F,
+  use_raster = T,
+  raster_quality = 5,
+  raster_magick_filter = "Lanczos2",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  ),heatmap_legend_side = "bottom",
+    ht_gap = unit(0.1, "mm"),
+    annotation_legend_side = "right",
+    legend_grouping = "original")
+dev.off()
+
+```
+
+# Specific RMS heatmap
+
+
+```{r colors + name}
+filename = "RMS_specific_sep_type_biotype.pdf"
+plotname = paste(save_dir,"heatmap",filename,sep = "/")
+
+heatmap_cols <- colorRampPalette(rev(RColorBrewer::brewer.pal(n = 5, name = "RdYlBu")))(100)
+
+cohort_colors <- c("RMS" = "firebrick3",
+                   "Tumor" = "peachpuff3",
+                   "Nontumor" = "#6EA3D1")
+
+fusion_colors <- c("RMS"="#9088dC","FP-RMS" = "#C04037","FN-RMS"="#266566")
+
+biotype_colors = c("lncRNA" = "gold",
+                   "protein_coding" = "purple4",
+                   "stringtie" = "cyan3")
+
+
+```
+
+## enrichment
+
+```{r}
+
+fp_table <- read.delim(paste(rna_dir,
+                                "results/quantification/",
+                                "RMS-FP_enrichment.csv", sep="/"), 
+                          sep = ",")
+fp_specific <- fp_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+fn_table <- read.delim(paste(rna_dir, 
+                                "results/quantification/",
+                                "RMS-FN_enrichment.csv", sep="/"), 
+                          sep = ",")
+fn_specific <- fn_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+rms_table <- read.delim(paste(rna_dir, "results/quantification/",
+                                 "RMS_enrichment.csv", sep="/"), 
+                           sep = ",")
+rms_specific <- rms_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+specific_genes <- c(fp_specific, 
+                    rms_specific,
+                    fn_specific) %>% unique()
+
+```
+
+## counts & meta
+
+```{r counts & meta}
+
+heatmap <- readRDS(file = paste(rna_dir,"analysis/quantification","RMS_heatmap_all_cohorts.RDS", sep = "/"))
+
+meta <- read.delim(file = paste(rna_dir,"documentation/all_cohorts",
+                                "rms_meta_all_combined.csv",
+                                sep = "/"), sep = ",")
+
+```
+
+## HM annotation
+
+```{r heatmap}
+
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% specific_genes),]
+
+breaks <- seq(0, 3, length.out = 100)
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta[, c("cohort","sample_id")])
+index <- order(match(meta$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+annot_col$sample_id <- NULL
+annot_col <- annot_col %>% 
+  dplyr::mutate(cohort = factor(dplyr::case_when(cohort %in% c("EWS","OS","WT",
+                                                               "ATRT","MBL","NBL",
+                                                               "EPN","AML",
+                                                               "T-ALL","B-ALL") ~ "Tumor",
+                                                 cohort %in% c("EVO-DEVO-fetal",
+                                                               "EVO-DEVO-postbirth",
+                                                               "R2_atlas" ,
+                                                               "GTEX") ~ "Nontumor",
+                                                 TRUE ~ cohort), levels = names(cohort_colors)))
+
+anno_cols <- list(cohort = setNames(cohort_colors,levels(annot_col$cohort)))
+
+ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col,
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+annot_row <- data.frame(gene_id = rownames(heatmap_matrix)) %>%
+  dplyr::left_join(fp_table[,c("gene_id","gene_biotype")]) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(type = dplyr::case_when(gene_id %in% fp_specific &
+                                        !(gene_id %in% fn_specific) ~ "FP-RMS",
+                                        gene_id %in% fn_specific &
+                                        !(gene_id %in% fp_specific) ~ "FN-RMS",
+                                        gene_id %in% fn_specific &
+                                        gene_id %in% fp_specific ~ "RMS",
+                                        TRUE ~ "RMS")) %>%
+  dplyr::mutate(type = factor(type, levels = names(fusion_colors)),
+                gene_biotype = factor(gene_biotype, levels = names(biotype_colors)),
+                type_biotype = factor(paste(type,gene_biotype, sep = "_"), 
+                                      levels = c(paste(rep("RMS",3),
+                                                       c("protein_coding","lncRNA","stringtie"),
+                                                       sep ="_"),
+                                                 paste(rep("FP-RMS",3),
+                                                       c("protein_coding","lncRNA","stringtie"),
+                                                       sep ="_"),
+                                                 paste(rep("FN-RMS",3),
+                                                       c("protein_coding","lncRNA","stringtie"),
+                                                       sep ="_")))) %>%
+  tibble::column_to_rownames(var = "gene_id")
+
+anno_row_cols <- list(type = setNames(fusion_colors,
+                                      levels(annot_row$type)),
+                      gene_biotype = setNames(biotype_colors,
+                                              levels(annot_row$gene_biotype)),
+                      type_biotype = setNames(rep("white",9),levels(annot_row$type_biotype)))
+
+ha_row <- ComplexHeatmap::HeatmapAnnotation(
+  df = annot_row,
+  which = "row",
+  col = anno_row_cols,
+  show_legend = c(T,T,F),
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+```
+
+## plotting
+
+```{r plot}
+
+pdf(file = plotname,
+    width = 10,
+    height = 8)
+ComplexHeatmap::draw(
+  ComplexHeatmap::Heatmap(matrix = heatmap_matrix,
+                          # Hide names
+                        top_annotation = ha,
+                        left_annotation = ha_row,
+                        column_split = annot_col$cohort,
+                        row_split = annot_row$type_biotype,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  cluster_row_slices = F,
+  cluster_column_slices = F,
+  use_raster = T,
+  raster_quality = 5,
+  raster_magick_filter = "Lanczos2",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  ),heatmap_legend_side = "bottom",
+    ht_gap = unit(0.1, "mm"),
+    annotation_legend_side = "right",
+    legend_grouping = "original")
+dev.off()
+
+```
+
+# Single gene plots
+
+```{r prepare data}
+
+dds = readRDS(paste(rna_dir,
+                    "analysis/quantification",
+                    "RMS_all_cohorts_for_plotting.RDS",
+                    sep = "/"))
+
+cohort_colors <- c("RMS" = "firebrick3",
+                   "EWS" = "green4",
+                   "OS" = "indianred3",
+                   "WT" = "aquamarine3",
+                   "ATRT" = "darkorange3",
+                   "MBL" = "darkgoldenrod3",
+                   "NBL" = "blue3",
+                   "EPN" = "peachpuff3",
+                   "AML" = "hotpink3",
+                   "T-ALL" = "violetred3",
+                   "B-ALL" = "plum3",
+                   "EVO-DEVO-fetal" = "#2C6C5E",
+                   "EVO-DEVO-postbirth" = "#7AD151FF",
+                   "R2_atlas" = "#1675B6",
+                   "GTEX" = "#6EA3D1")
+
+```
+
+# Specific RMS examples
+
+ENSG00000129152 - MYOD1
+ENSG00000134323 - MYCN
+ENSG00000122180 - MYOG
+MSTRG.26303 - MSTRG.26303
+ENSG00000206503 - HLA-A
+HLA-B
+HLA-C
+
+```{r}
+
+picked_gene <- c("HLA-A"="ENSG00000206503")
+
+plot_counts <- DESeq2::plotCounts(dds = dds,
+                                  gene = picked_gene,
+                                  intgroup = c("cohort"),
+                                  normalized=T,
+                                  returnData = T) %>%
+  dplyr::mutate(cohort = factor(cohort, levels = names(cohort_colors)))
+
+ggplot(plot_counts, aes(x = cohort, y = count, col = cohort)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.33,size =2) +
+      stat_summary(fun.data = "mean_sdl",
+                   fun.args = list(mult = 1),
+    geom = "linerange",
+    linewidth = 1,
+    col = "grey20") +
+  stat_summary(
+    fun = "mean",
+    geom = "point",
+    size = 5,
+    shape = 21,
+    aes(fill = cohort),
+    col = "grey20",
+    stroke = 1,
+  ) +
+  scale_fill_manual(values = cohort_colors) +
+  scale_color_manual(values = cohort_colors) +
+  labs(title = paste(names(picked_gene)), y = "norm count") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "none")
+
+ggsave(filename = paste0(names(picked_gene),".pdf"),
+       device = "pdf",
+       path = paste(save_dir,"quantification", sep = "/"),
+       width = 6,
+       height = 4)
+
+
+```
+
+# ORF occurrence / sample
+
+Load PPMs
+Attach ORF types to ORFs
+Summarise ORF types per sample
+Created stacked bar plots
+
+```{r colors}
+
+orf_type_cols = c("CDS"="#1F78B4",
+                  "dORF"="#CAB2D6",
+                  "intORF"="#A6CEE3",
+                  "lncORF"="#E31A1C",
+                  "novel ORF"="#FDBF6F",
+                  "uoORF"="#B2DF8A",
+                  "doORF"="#33A02C",
+                  "uORF"="#FF7F00")
+
+```
+
+```{r load ORF definitions}
+
+intorfs <- read.delim(paste(ribo_dir, 
+                            "results/orf_reannotation",
+                            "jorge_psites_intorfs.csv",
+                            sep = "/"),sep = ",")
+
+orf_table <- read.delim(file = paste(ribo_dir,"results/orf_reannotation",
+                                     "RMS_harmonised_ORF_table.csv", sep = "/"),
+                        sep = ",")
+
+orf_categories_df <- orf_table %>%
+  dplyr::select(orf_id,orf_category_new) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "nested_ORF" &
+                                                    !(orf_id %in% intorfs$orf_id) ~ "ORF_annotated",
+                                                    grepl("truncation|extension",orf_category_new) ~ "ORF_annotated",
+                                                    TRUE ~ orf_category_new))
+
+```
+
+```{r Wrangle PPMs}
+
+ppm <- rbind(read.delim(paste(ribo_dir,"analysis/p_site_quantification/",
+                              "RMS_orfquant_merged_quant_psites_permillion.txt", 
+                              sep = "/"), 
+                        sep = " "),
+             read.delim(paste(ribo_dir,"analysis/price_p_site_quantification/",
+                                 "RMS_price_merged_quant_psites_permillion.txt", 
+                              sep = "/"), 
+                        sep = " ")
+             )
+
+lnc_rna_orfs <- orf_table %>% 
+  dplyr::filter(gene_biotype == "lncRNA") %>%
+  dplyr::pull(orf_id)
+
+ppm_df <- ifelse(ppm > 1, T,F) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "orf_id") %>%
+  dplyr::left_join(orf_categories_df) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    TRUE ~ orf_category_new)) %>%
+  tibble::column_to_rownames(var = "orf_id") %>%
+  tidyr::pivot_longer(cols = !orf_category_new, 
+               names_to = "sample_id", 
+               values_to = "value") %>%
+  dplyr::filter(value == TRUE &
+                !(sample_id == "RMS_merged")) %>%
+  dplyr::group_by(orf_category_new, sample_id) %>%
+  dplyr::summarize(count = n()) %>%
+  dplyr::mutate(batch = dplyr::case_when(grepl("ORG",sample_id) ~ "ORG",
+                                         grepl("TIS", sample_id) ~ "TIS",
+                                         TRUE ~ NA),
+                condition = dplyr::case_when(grepl("aRMS|FP",sample_id) ~ "FP-RMS",
+                                             grepl("eRMS|FN", sample_id) ~ "FN-RMS",
+                                             TRUE ~ "RMS"),
+                orf_category_new = dplyr::case_when(orf_category_new == "ORF_annotated" ~ "CDS",
+                                                    orf_category_new == "nested_ORF" ~ "intORF",
+                                                    orf_category_new == "overl_dORF" ~ "doORF",
+                                                    orf_category_new == "overl_uORF" ~ "uoORF",
+                                                    orf_category_new == "novel" ~ "novel ORF",
+                                                    TRUE ~ orf_category_new),
+                orf_category_new = factor(orf_category_new, levels = names(orf_type_cols)))
+
+```
+
+
+## plot
+
+```{r plot}
+
+ggplot(ppm_df, aes(x = sample_id, y = count, fill = orf_category_new)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ batch, scales = "free_x") +
+  scale_fill_manual(values = orf_type_cols) +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank(),
+        panel.border = element_blank(), 
+        strip.background = element_blank(), 
+        axis.line.x = element_blank(), 
+        strip.text = element_text(size = 12))
+
+ggsave(filename = "detected_ORFS.pdf",
+       device = "pdf",
+       path = paste(save_dir,"orf_quantification", sep = "/"),
+       width = 6,
+       height = 4)
+```
+
+## enriched plot
+
+```{r}
+ppm_enr_df <- ifelse(ppm > 1, T,F) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "orf_id") %>%
+  dplyr::left_join(orf_categories_df) %>%
+  dplyr::filter(gene_id %in% specific_genes) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    TRUE ~ orf_category_new)) %>%
+  tibble::column_to_rownames(var = "orf_id") %>%
+  tidyr::pivot_longer(cols = !c("orf_category_new","gene_id"), 
+               names_to = "sample_id", 
+               values_to = "value") %>%
+  dplyr::filter(value == TRUE &
+                !(sample_id == "RMS_merged")) %>%
+  dplyr::group_by(orf_category_new, sample_id) %>%
+  dplyr::summarize(count = n()) %>%
+  dplyr::mutate(batch = dplyr::case_when(grepl("ORG",sample_id) ~ "ORG",
+                                         grepl("TIS", sample_id) ~ "TIS",
+                                         TRUE ~ NA),
+                condition = dplyr::case_when(grepl("aRMS|FP",sample_id) ~ "FP-RMS",
+                                             grepl("eRMS|FN", sample_id) ~ "FN-RMS",
+                                             TRUE ~ "RMS"),
+                orf_category_new = dplyr::case_when(orf_category_new == "ORF_annotated" ~ "CDS",
+                                                    orf_category_new == "nested_ORF" ~ "intORF",
+                                                    orf_category_new == "overl_dORF" ~ "doORF",
+                                                    orf_category_new == "overl_uORF" ~ "uoORF",
+                                                    orf_category_new == "novel" ~ "novel ORF",
+                                                    TRUE ~ orf_category_new),
+                orf_category_new = factor(orf_category_new, levels = names(orf_type_cols)))
+```
+
+```{r plot}
+
+ggplot(ppm_enr_df, aes(x = sample_id, y = count, fill = orf_category_new)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ batch, scales = "free_x") +
+  scale_fill_manual(values = orf_type_cols) +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank(),
+        panel.border = element_blank(), 
+        strip.background = element_blank(), 
+        axis.line.x = element_blank(), 
+        strip.text = element_text(size = 12))
+```
+
+# ORF expression / condition
+
+```{r colors}
+
+orf_type_cols = c("CDS"="#1F78B4",
+                  "dORF"="#CAB2D6",
+                  "intORF"="#A6CEE3",
+                  "lncORF"="#E31A1C",
+                  "novel ORF"="#FDBF6F",
+                  "uoORF"="#B2DF8A",
+                  "doORF"="#33A02C",
+                  "uORF"="#FF7F00")
+
+```
+
+```{r load ORF definitions}
+
+intorfs <- read.delim(paste(ribo_dir, 
+                            "results/orf_reannotation",
+                            "jorge_psites_intorfs.csv",
+                            sep = "/"),sep = ",")
+
+orf_table <- read.delim(file = paste(ribo_dir,"results/orf_reannotation",
+                                     "RMS_harmonised_ORF_table.csv", sep = "/"),
+                        sep = ",")
+
+orf_categories_df <- orf_table %>%
+  dplyr::select(orf_id,orf_category_new) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "nested_ORF" &
+                                                    !(orf_id %in% intorfs$orf_id) ~ "ORF_annotated",
+                                                    grepl("truncation|extension",orf_category_new) ~ "ORF_annotated",
+                                                    TRUE ~ orf_category_new))
+
+lnc_rna_orfs <- orf_table %>% 
+  dplyr::filter(gene_biotype == "lncRNA") %>%
+  dplyr::pull(orf_id)
+
+pp <- rbind(read.delim(paste(ribo_dir,"analysis/p_site_quantification/",
+                              "RMS_orfquant_merged_quant_psites.txt", 
+                              sep = "/"), 
+                        sep = " "),
+             read.delim(paste(ribo_dir,"analysis/price_p_site_quantification/",
+                                 "RMS_price_merged_quant_psites.txt", 
+                              sep = "/"), 
+                        sep = " "))[,-51]
+
+```
+
+## Psite normalised
+
+```{r}
+
+coldata = data.frame(sample_id = colnames(pp)) %>%
+                                       dplyr::mutate(batch = dplyr::case_when(grepl("ORG",sample_id) ~ "ORG",
+                                                                              grepl("TIS",sample_id) ~ "TIS",
+                                                                              TRUE ~ "RMS"),
+                                                     condition = dplyr::case_when(grepl("aRMS|FP",sample_id) ~ "FP-RMS",
+                                                                                  grepl("eRMS|FN",sample_id) ~ "FN-RMS",
+                                                                                  TRUE ~ "RMS"))
+rownames(coldata) = coldata$sample_id
+
+dds = DESeq2::DESeqDataSetFromMatrix(pp, 
+                                     colData = coldata,
+                                     design = ~ 1)
+dds = DESeq2::estimateSizeFactors(dds)
+
+norm_counts <- DESeq2::counts(dds, normalized = T)
+
+vsd = DESeq2::vst(dds)
+
+```
+
+## norm counts plot
+
+```{r}
+
+
+plot_norm_counts <- norm_counts %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "orf_id") %>%
+  tidyr::pivot_longer(cols = !orf_id, 
+                      names_to = "sample_id",
+                      values_to = "psites")
+
+norm_counts_fp <- plot_norm_counts %>%
+  dplyr::filter(grepl("FP|aRMS",sample_id)) %>%
+  dplyr::group_by(orf_id) %>%
+  dplyr::summarize(value = mean(psites, na.rm = TRUE))  %>%
+  dplyr::left_join(orf_categories_df) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    TRUE ~ orf_category_new)) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "ORF_annotated" ~ "CDS",
+                                                    orf_category_new == "nested_ORF" ~ "intORF",
+                                                    orf_category_new == "overl_dORF" ~ "doORF",
+                                                    orf_category_new == "overl_uORF" ~ "uoORF",
+                                                    orf_category_new == "novel" ~ "novel ORF",
+                                                    TRUE ~ orf_category_new),
+                orf_category_new = factor(orf_category_new, levels = names(orf_type_cols)))
+
+norm_counts_fn <- plot_norm_counts %>%
+  dplyr::filter(grepl("FN|eRMS",sample_id)) %>%
+  dplyr::group_by(orf_id) %>%
+  dplyr::summarize(value = mean(psites, na.rm = TRUE)) %>%
+  dplyr::left_join(orf_categories_df) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    TRUE ~ orf_category_new)) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "ORF_annotated" ~ "CDS",
+                                                    orf_category_new == "nested_ORF" ~ "intORF",
+                                                    orf_category_new == "overl_dORF" ~ "doORF",
+                                                    orf_category_new == "overl_uORF" ~ "uoORF",
+                                                    orf_category_new == "novel" ~ "novel ORF",
+                                                    TRUE ~ orf_category_new),
+                orf_category_new = factor(orf_category_new, levels = names(orf_type_cols)))
+
+p1 <- ggplot(data = norm_counts_fn, aes(x = orf_category_new, 
+                                        y = value,
+                                        fill = orf_category_new)) +
+  geom_hline(yintercept = 4) +
+  ggbeeswarm::geom_quasirandom(size = 0.2) +
+  geom_boxplot(outliers = F, alpha = 0.7) +
+  scale_fill_manual(values = orf_type_cols) +
+  scale_y_continuous(trans = scales::log10_trans(), limits = c(0.1,66000)) +
+  labs(title = "FN-RMS") +
+  theme_classic() +
+  coord_flip()
+
+p2 <- ggplot(data = norm_counts_fp, aes(x = orf_category_new, 
+                                        y = value,
+                                        fill = orf_category_new)) +
+  geom_hline(yintercept = 4) +
+  ggbeeswarm::geom_quasirandom(size = 0.2) +
+  geom_boxplot(outliers = F, alpha = 0.7) +
+  scale_fill_manual(values = orf_type_cols) +
+  scale_y_continuous(trans = scales::log10_trans(), limits = c(0.1,66000)) +
+  labs(title = "FP-RMS") +
+  theme_classic() +
+  coord_flip()
+
+ggpubr::ggarrange(p1,p2, ncol = 1,legend = F)
+
+```
+
+# Enriched ORFs
+
+```{r colors}
+
+orf_type_cols = c("CDS"="#1F78B4",
+                  "dORF"="#CAB2D6",
+                  "intORF"="#A6CEE3",
+                  "lncORF"="#E31A1C",
+                  "novel ORF"="#FDBF6F",
+                  "uoORF"="#B2DF8A",
+                  "doORF"="#33A02C",
+                  "uORF"="#FF7F00")
+
+```
+
+```{r enrichment}
+
+fp_table <- read.delim(paste(rna_dir,
+                                "results/quantification/",
+                                "RMS-FP_enrichment.csv", sep="/"), 
+                          sep = ",")
+fp_specific <- fp_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+fn_table <- read.delim(paste(rna_dir, 
+                                "results/quantification/",
+                                "RMS-FN_enrichment.csv", sep="/"), 
+                          sep = ",")
+fn_specific <- fn_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+rms_table <- read.delim(paste(rna_dir, "results/quantification/",
+                                 "RMS_enrichment.csv", sep="/"), 
+                           sep = ",")
+rms_specific <- rms_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+specific_genes <- c(fp_specific, 
+                    rms_specific,
+                    fn_specific) %>% unique()
+
+```
+
+```{r load ORF definitions}
+
+intorfs <- read.delim(paste(ribo_dir, 
+                            "results/orf_reannotation",
+                            "jorge_psites_intorfs.csv",
+                            sep = "/"),sep = ",")
+
+orf_table <- read.delim(file = paste(ribo_dir,"results/orf_reannotation",
+                                     "RMS_harmonised_ORF_table.csv", sep = "/"),
+                        sep = ",")
+
+orf_categories_df <- orf_table %>%
+    dplyr::filter(gene_id %in% specific_genes &
+                  translated == TRUE) %>%
+  dplyr::select(orf_id,gene_id,orf_category_new) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "nested_ORF" &
+                                                    !(orf_id %in% intorfs$orf_id) ~ "ORF_annotated",
+                                                    grepl("truncation|extension",orf_category_new) ~ "ORF_annotated",
+                                                    TRUE ~ orf_category_new))
+
+pp <- rbind(read.delim(paste(ribo_dir,"analysis/p_site_quantification/",
+                              "RMS_orfquant_merged_quant_psites.txt", 
+                              sep = "/"), 
+                        sep = " "),
+             read.delim(paste(ribo_dir,"analysis/price_p_site_quantification/",
+                                 "RMS_price_merged_quant_psites.txt", 
+                              sep = "/"), 
+                        sep = " "))[,-51]
+
+```
+
+```{r}
+
+coldata = data.frame(sample_id = colnames(pp)) %>%
+                                       dplyr::mutate(batch = dplyr::case_when(grepl("ORG",sample_id) ~ "ORG",
+                                                                              grepl("TIS",sample_id) ~ "TIS",
+                                                                              TRUE ~ "RMS"),
+                                                     condition = dplyr::case_when(grepl("aRMS|FP",sample_id) ~ "FP-RMS",
+                                                                                  grepl("eRMS|FN",sample_id) ~ "FN-RMS",
+                                                                                  TRUE ~ "RMS"))
+rownames(coldata) = coldata$sample_id
+
+dds = DESeq2::DESeqDataSetFromMatrix(pp, 
+                                     colData = coldata,
+                                     design = ~ condition)
+
+dds = DESeq2::estimateSizeFactors(dds)
+
+norm_counts <- DESeq2::counts(dds, normalized = T)
+
+vsd = DESeq2::vst(dds)
+
+```
+
+## norm counts
+
+```{r}
+
+plot_norm_counts <- norm_counts %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "orf_id") %>%
+  dplyr::right_join(orf_categories_df) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    TRUE ~ orf_category_new)) %>%
+  tidyr::pivot_longer(cols = !c("orf_category_new","gene_id","orf_id"), 
+               names_to = "sample_id", 
+               values_to = "value") %>%
+  dplyr::mutate(batch = dplyr::case_when(grepl("ORG",sample_id) ~ "ORG",
+                                         grepl("TIS",sample_id) ~ "TIS",
+                                         TRUE ~ "RMS"),
+                condition = dplyr::case_when(grepl("aRMS|FP",sample_id) ~ "FP-RMS",
+                                             grepl("eRMS|FN",sample_id) ~ "FN-RMS",
+                                             TRUE ~ "RMS"),
+                orf_category_new = dplyr::case_when(orf_category_new == "ORF_annotated" ~ "CDS",
+                                                    orf_category_new == "nested_ORF" ~ "intORF",
+                                                    orf_category_new == "overl_dORF" ~ "doORF",
+                                                    orf_category_new == "overl_uORF" ~ "uoORF",
+                                                    orf_category_new == "novel" ~ "novel ORF",
+                                                    TRUE ~ orf_category_new),
+                orf_category_new = factor(orf_category_new, levels = names(orf_type_cols)))
+
+ggplot(data = plot_norm_counts, aes(x = orf_category_new, y = value,fill = orf_category_new)) +
+  ggbeeswarm::geom_quasirandom(size = 0.3) +
+  geom_boxplot(outliers = F, alpha = 0.7) +
+  scale_fill_manual(values = orf_type_cols) +
+  theme_classic() +
+  facet_wrap( ~ condition,ncol = 1) +
+  labs(x = "ORF categories", y = "Normalised P-site counts (log10)") + 
+  scale_y_continuous(transform = "log10") +
+  coord_flip() +
+  theme(legend.position="none")
+
+```
+
+# Quant tumor / org compare
+
+```{r colors}
+
+orf_type_cols = c("CDS"="#1F78B4",
+                  "dORF"="#CAB2D6",
+                  "intORF"="#A6CEE3",
+                  "lncORF"="#E31A1C",
+                  "novel ORF"="#FDBF6F",
+                  "uoORF"="#B2DF8A",
+                  "doORF"="#33A02C",
+                  "uORF"="#FF7F00")
+
+```
+
+```{r}
+
+# Translated ORFs
+intorfs <- read.delim(paste(ribo_dir, 
+                            "results/orf_reannotation",
+                            "jorge_psites_intorfs.csv",
+                            sep = "/"),sep = ",")
+
+orf_table <- read.delim(file = paste(ribo_dir,"results/orf_reannotation",
+                                     "RMS_harmonised_ORF_table.csv", sep = "/"),
+                        sep = ",")
+
+orf_categories_df <- orf_table %>%
+  dplyr::filter(translated == T) %>%
+  dplyr::select(orf_id,orf_category_new,gene_id) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "nested_ORF" &
+                                                    !(orf_id %in% intorfs$orf_id) ~ "ORF_annotated",
+                                                    grepl("truncation|extension",orf_category_new) ~ "ORF_annotated",
+                                                    TRUE ~ orf_category_new))
+
+lnc_rna_orfs <- orf_table %>% 
+  dplyr::filter(gene_biotype == "lncRNA") %>%
+  dplyr::pull(orf_id)
+
+# Raw ORF counts
+pp <- rbind(read.delim(paste(ribo_dir,"analysis/p_site_quantification/",
+                              "RMS_orfquant_merged_quant_psites.txt", 
+                              sep = "/"), 
+                        sep = " "),
+             read.delim(paste(ribo_dir,"analysis/price_p_site_quantification/",
+                                 "RMS_price_merged_quant_psites.txt", 
+                              sep = "/"), 
+                        sep = " "))[,-51]
+
+coldata = data.frame(sample_id = colnames(pp)) %>%
+                                       dplyr::mutate(batch = dplyr::case_when(grepl("ORG",sample_id) ~ "ORG",
+                                                                              grepl("TIS",sample_id) ~ "TIS",
+                                                                              TRUE ~ "RMS"),
+                                                     condition = dplyr::case_when(grepl("aRMS|FP",sample_id) ~ "FP-RMS",
+                                                                                  grepl("eRMS|FN",sample_id) ~ "FN-RMS",
+                                                                                  TRUE ~ "RMS"))
+rownames(coldata) = coldata$sample_id
+
+```
+
+## RIBO - norm counts
+
+```{r}
+
+
+dds = DESeq2::DESeqDataSetFromMatrix(pp, 
+                                     colData = coldata,
+                                     design = ~ condition)
+
+
+keep <- orf_categories_df$orf_id
+dds <- dds[keep,]
+
+dds = DESeq2::estimateSizeFactors(dds)
+
+norm_counts <- DESeq2::counts(dds, normalized = T)
+
+```
+
+### plot
+
+```{r}
+
+count_df <- norm_counts %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "orf_id") %>%
+  tidyr::pivot_longer(cols = !orf_id,
+                      names_to = "sample_id",
+                      values_to = "psites") %>%
+  dplyr::left_join(coldata, by = "sample_id") %>%
+  dplyr::left_join(orf_categories_df, by = "orf_id")
+
+plot_df <- data.frame(TIS = count_df %>% 
+                        dplyr::filter(batch == "TIS") %>% 
+                        dplyr::group_by(orf_id) %>%
+                        dplyr::summarize(Value2 = mean(psites, na.rm = TRUE)) %>%
+                        dplyr::pull(Value2),
+                      ORG = count_df %>% 
+                        dplyr::filter(batch == "ORG") %>%
+                        dplyr::group_by(orf_id) %>%
+                        dplyr::summarize(Value2 = mean(psites, na.rm = TRUE)) %>%
+                        dplyr::pull(Value2),
+                      orf_id = count_df %>% 
+                        dplyr::filter(batch == "ORG") %>%
+                        dplyr::group_by(orf_id) %>%
+                        dplyr::summarize(Value2 = mean(psites, na.rm = TRUE)) %>%
+                        dplyr::pull(orf_id)) %>%
+  dplyr::left_join(orf_categories_df, by = "orf_id") %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    orf_category_new == "ORF_annotated" ~ "CDS",
+                                                    orf_category_new == "nested_ORF" ~ "intORF",
+                                                    orf_category_new == "overl_dORF" ~ "doORF",
+                                                    orf_category_new == "overl_uORF" ~ "uoORF",
+                                                    orf_category_new == "novel" ~ "novel ORF",
+                                                    TRUE ~ orf_category_new),
+                orf_category_new = factor(orf_category_new, levels = names(orf_type_cols)))
+
+ggplot(plot_df, aes(x = TIS, y = ORG, col = orf_category_new)) +
+  scale_color_manual(values = orf_type_cols) +
+  geom_abline(slope = 1, linewidth = 1.2) +
+  geom_vline(xintercept = 100) +
+  geom_hline(yintercept = 100) +
+  geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+  geom_point(size = 0.2) +
+  theme_classic() +
+  scale_y_log10(limits = c(0.1,1000000)) +
+  scale_x_log10(limits = c(0.1,1000000)) +
+  labs(x = "Tissue ORF expression", y = "Organoid ORF expression")
+
+
+```
+
+### plot - enriched
+
+```{r enriched}
+
+fp_table <- read.delim(paste(rna_dir,
+                                "results/quantification/",
+                                "RMS-FP_enrichment.csv", sep="/"), 
+                          sep = ",")
+fp_specific <- fp_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+fn_table <- read.delim(paste(rna_dir, 
+                                "results/quantification/",
+                                "RMS-FN_enrichment.csv", sep="/"), 
+                          sep = ",")
+fn_specific <- fn_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+rms_table <- read.delim(paste(rna_dir, "results/quantification/",
+                                 "RMS_enrichment.csv", sep="/"), 
+                           sep = ",")
+rms_specific <- rms_table %>% 
+                      dplyr::filter(specific == T &
+                                    gene_biotype %in% c("lncRNA","protein_coding","stringtie")) %>%
+                      dplyr::pull(gene_id)
+
+specific_genes <- c(fp_specific, 
+                    rms_specific,
+                    fn_specific) %>% unique()
+
+```
+
+
+``` {r plot}
+
+transl_orfs <- orf_table %>% 
+                  dplyr::filter(translated == T) %>% 
+                  dplyr::pull(orf_id)
+
+plot_df_enr <- plot_df %>%
+  dplyr::filter(gene_id %in% specific_genes & 
+                  orf_id %in% transl_orfs) %>%
+  dplyr::mutate(`ORF category` = factor(orf_category_new, levels = levels(orf_category_new)))
+
+
+p <- ggplot(plot_df_enr,aes(x = log10(TIS), y = log10(ORG), col = `ORF category`)) +
+  scale_color_manual(values = orf_type_cols, labels = 
+                       c("CDS n = 158","dORF n = 5",
+                         "intORF n = 12", "lncORF n = 110",
+                         "novel ORF n = 92", "uoORF n = 14",
+                         "doORF n = 1", "uORF n = 70")) +
+  geom_abline(slope = 1, linewidth = 0.8) +
+  geom_vline(xintercept = 1, linewidth = 0.8) +
+  geom_hline(yintercept = 1, linewidth = 0.8) +
+  geom_point(size = 2) +
+  theme_classic(base_size = 16) +
+  theme(legend.position = "none") +
+  labs(x = "log10(Tissue ORF expression)", y = "log10(Organoid ORF expression)")
+
+x_density <- cowplot::axis_canvas(p, axis = "x") +
+  geom_density(data = plot_df_enr, aes(x = log10(TIS), col = `ORF category`, fill = `ORF category`), alpha = 0.105) +
+  scale_fill_manual(values = orf_type_cols) +
+  scale_color_manual(values = orf_type_cols)
+
+y_density <- cowplot::axis_canvas(p, axis = "y", coord_flip = T) +
+  geom_density(data = plot_df_enr, aes(x = log10(ORG), col = `ORF category`, fill = `ORF category`), alpha = 0.05) +
+  scale_fill_manual(values = orf_type_cols) +
+  scale_color_manual(values = orf_type_cols) +
+  coord_flip()
+
+plot_dens <- cowplot::insert_yaxis_grob(p,
+                                        y_density,
+                                        position = "right")
+plot_dens_2 <- cowplot::insert_xaxis_grob(plot_dens,
+                                        x_density,
+                                        position = "top")
+
+ggdraw(plot_dens_2)
+
+ggsave(filename = "enriched_ORF_expression_comparison_density.pdf",
+       device = "pdf",
+       path = paste(save_dir,"quantification", sep = "/"),
+       width = 6,
+       height = 4.5)
+
+```
+
+## RIBO - fold change
+
+### Tissue
+
+```{r tum}
+
+col_tis <- coldata %>% 
+  dplyr::filter(batch == "TIS") %>%
+  dplyr::pull(sample_id)
+
+dds = DESeq2::DESeqDataSetFromMatrix(pp[,colnames(pp) %in% col_tis], 
+                                     colData = coldata %>% 
+                                                dplyr::filter(batch == "TIS"),
+                                     design = ~ condition)
+
+
+keep <- orf_categories_df$orf_id
+dds <- dds[keep,]
+
+dds = DESeq2::DESeq(dds)
+
+results_tum <- DESeq2::results(dds)
+
+```
+
+### Organoid
+
+```{r org}
+
+sel_cols <- coldata %>% 
+  dplyr::filter(batch == "ORG") %>%
+  dplyr::pull(sample_id)
+
+dds = DESeq2::DESeqDataSetFromMatrix(pp[,colnames(pp) %in% sel_cols], 
+                                     colData = coldata %>% 
+                                                dplyr::filter(batch == "ORG"),
+                                     design = ~ condition)
+
+
+keep <- orf_categories_df$orf_id
+dds <- dds[keep,]
+
+dds = DESeq2::DESeq(dds)
+
+results_org <- DESeq2::results(dds)
+
+```
+
+## compare
+
+```{r}
+
+plot_df <- data.frame(orf_id = rownames(results_tum),
+                      tis_lfc = results_tum$log2FoldChange,
+                      org_lfc = results_org$log2FoldChange) %>%
+  dplyr::mutate(tis_lfc = dplyr::case_when(tis_lfc > 10 ~ 10,
+                                           tis_lfc < -10 ~ -10,
+                                           TRUE ~ tis_lfc),
+                org_lfc = dplyr::case_when(org_lfc > 10 ~ 10,
+                                           org_lfc < -10 ~ -10,
+                                           TRUE ~ org_lfc)) %>%
+  dplyr::left_join(orf_categories_df) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    orf_category_new == "ORF_annotated" ~ "CDS",
+                                                    orf_category_new == "nested_ORF" ~ "intORF",
+                                                    orf_category_new == "overl_dORF" ~ "doORF",
+                                                    orf_category_new == "overl_uORF" ~ "uoORF",
+                                                    orf_category_new == "novel" ~ "novel ORF",
+                                                    TRUE ~ orf_category_new),
+                orf_category_new = factor(orf_category_new, levels = names(orf_type_cols)))
+
+ggplot(plot_df, aes(x = tis_lfc, y = org_lfc, col = orf_category_new)) +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  geom_abline(slope = 1) +
+  scale_color_manual(values = orf_type_cols) +
+  geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+  geom_point(size = 0.1) +
+  theme_classic() +
+  scale_x_continuous(limits = c(-12,12)) +
+  scale_y_continuous(limits = c(-12,12))
+
+```
+
+# Vibert comparison
+
+```{r}
+
+transl_genes <- orf_table %>% 
+                        dplyr::filter(translated == TRUE &
+                                      gene_biotype == "stringtie") %>%
+                        dplyr::pull(gene_id)
+
+rms_gtf <- rtracklayer::import(txome_gtf)
+rms_txs <- rms_gtf[grepl("MSTRG",rms_gtf$gene_id),]
+rms_transl <- rms_gtf[rms_gtf$gene_id %in% transl_genes,]
+
+vibert_gtf <- rtracklayer::import(paste(ribo_dir,"documentation","Vibert.gtf",sep = "/"))
+
+txo <- GenomicRanges::findOverlaps(subject = rms_txs,
+                            query = vibert_gtf)
+
+tx_trans <- GenomicRanges::findOverlaps(subject = rms_transl,
+                            query = vibert_gtf)
+
+transl_matches <- rms_transl[subjectHits(tx_trans)]
+tx_found_matches <- rms_txs[subjectHits(txo)]
+
+unique(tx_found_matches$gene_id)
+
+```
+
+# OLD annotation
+
+```{r}
+
+orfquant_results_location <- paste(ribo_dir,
+                                   "analysis/ORFquant/RMS_merged_psites",
+                                   "RMS_merged_psites_final_ORFquant_results",sep="/")
+
+# Load ORF definitions
+rms_orfquant_orfs <- get(load(orfquant_results_location))
+orfs_tx <- rms_orfquant_orfs$ORFs_tx
+orfs_tx_df <-  data.frame(mcols(orfs_tx)[, c("ORF_id_tr", "Protein", "gene_id", "gene_biotype", "gene_name", "transcript_id", "transcript_biotype", "ORF_category_Tx", "ORF_category_Gen", "P_sites_raw", "P_sites_raw_uniq")]) %>%
+  distinct()
+
+ppm_df_oq <- ifelse(ppm > 1, T,F) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "orf_id") %>%
+  dplyr::left_join(orf_categories_df) %>%
+  dplyr::mutate(orf_category_new = dplyr::case_when(orf_category_new == "novel" &
+                                                    orf_id %in% lnc_rna_orfs ~ "lncORF",
+                                                    TRUE ~ orf_category_new)) %>%
+  dplyr::left_join(orfs_tx_df %>% dplyr::select(ORF_id_tr,ORF_category_Tx), by = c("orf_id" = "ORF_id_tr")) %>%
+  tibble::column_to_rownames(var = "orf_id") %>%
+  dplyr::select(!orf_category_new) %>%
+  dplyr::filter(!is.na(ORF_category_Tx)) %>%
+  tidyr::pivot_longer(cols = !ORF_category_Tx, 
+               names_to = "sample_id", 
+               values_to = "value") %>%
+  dplyr::filter(value == TRUE &
+                !(sample_id == "RMS_merged")) %>%
+  dplyr::group_by(ORF_category_Tx, sample_id) %>%
+  dplyr::summarize(count = n()) %>%
+  dplyr::mutate(batch = dplyr::case_when(grepl("ORG",sample_id) ~ "ORG",
+                                         grepl("TIS", sample_id) ~ "TIS",
+                                         TRUE ~ NA),
+                condition = dplyr::case_when(grepl("aRMS|FP",sample_id) ~ "FP-RMS",
+                                             grepl("eRMS|FN", sample_id) ~ "FN-RMS",
+                                             TRUE ~ "RMS"),
+                ORF_category_Tx = factor(dplyr::case_when(ORF_category_Tx %in% c("ORF_annotated",
+                                                                          "C_extension",
+                                                                          "C_truncation",
+                                                                          "NC_extension",
+                                                                          "N_extension",
+                                                                          "N_truncation") ~ "CDS",
+                                                    ORF_category_Tx == "nested_ORF" ~ "intORF",
+                                                    ORF_category_Tx == "overl_dORF" ~ "doORF",
+                                                    ORF_category_Tx == "overl_uORF" ~ "uoORF",
+                                                    ORF_category_Tx == "novel" ~ "novel ORF",
+                                                    TRUE ~ ORF_category_Tx), levels = names(orf_type_cols)))
+  
+ggplot(ppm_df_oq, aes(x = sample_id, y = count, fill = ORF_category_Tx)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ batch, scales = "free_x") +
+  scale_fill_manual(values = orf_type_cols) +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank(),
+        panel.border = element_blank(), 
+        strip.background = element_blank(), 
+        axis.line.x = element_blank(), 
+        strip.text = element_text(size = 12))
+
+```
+
+```{r}
+
+```

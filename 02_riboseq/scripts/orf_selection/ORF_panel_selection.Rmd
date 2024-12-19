@@ -31,6 +31,8 @@ rna_dir = paste(basedir,"01_rnaseq",
                 sep="/")
 savedir = paste(basedir,"results/quantification/figures",
                 sep="/")
+
+table_dir <- paste(basedir,"handover", sep = "/")
 ribo_dir = paste(basedir,"02_riboseq",
                  sep = "/")
 metadata_dir = paste(basedir,"documentation",
@@ -139,6 +141,9 @@ rms_spec_orfs <- rms_orf_df %>%
 table(rms_spec_orfs$orf_category_new)
 table(rms_spec_orfs$number_fp_samples > rms_spec_orfs$number_fn_samples)
 
+write.table(rms_spec_orfs,file = paste(table_dir,"RMS_FP_specific_targets.csv", sep = "/"), 
+            sep = ",", quote = F, row.names = F)
+
 length(unique(rms_spec_orfs$gene_id))
 ```
 
@@ -163,6 +168,9 @@ high_nc_orf <- rms_orf_df %>%
                                                     similarity_score > 25 ~ F,
                                                     T ~ T)
   )
+
+write.table(high_nc_orf,file = paste(table_dir,"RMS_ncORF_targets.csv", sep = "/"), 
+            sep = ",", quote = F, row.names = F)
 
 length(unique(high_nc_orf$gene_id))
 
@@ -211,16 +219,10 @@ onc_orfs <- rms_orf_df %>%
 
 length(unique(onc_orfs$gene_id))
 
-```
-
-# FP overexpression
-
-genes over-expressed in a induced fusion protein experiment but they are not here :((
-
-```{r}
-
-
+write.table(onc_orfs,file = paste(table_dir,"RMS_onco_associated_orfs.csv", sep = "/"), 
+            sep = ",", quote = F, row.names = F)
 
 ```
+
 
 # FP correlation

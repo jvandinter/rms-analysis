@@ -1,0 +1,366 @@
+---
+title: "Immuno heatmaps"
+author: "JD"
+date: "2024-06-26"
+output: html_document
+---
+
+```{r libraries}
+
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(magrittr)
+library(tidyr)
+library(dplyr)
+
+```
+
+```{r parameters}
+
+
+basedir = "/hpc/pmc_vanheesch/projects/jvandinter/rms_analysis"
+rna_dir = paste(basedir,"01_rnaseq",sep = "/")
+ribo_dir = paste(basedir,"02_riboseq", sep = "/")
+save_dir = paste(basedir,"poster_plots/figures",sep="/")
+metadata_dir = paste(rna_dir,"documentation",sep="/")
+
+heatmap_cols <- colorRampPalette(rev(RColorBrewer::brewer.pal(n = 5, name = "RdYlBu")))(100)
+
+cohort_colors <- c("RMS" = "firebrick3",
+                   "EWS" = "green4",
+                   "OS" = "indianred3",
+                   "WT" = "aquamarine3",
+                   "ATRT" = "darkorange3",
+                   "MBL" = "darkgoldenrod3",
+                   "NBL" = "blue3",
+                   "EPN" = "peachpuff3",
+                   "AML" = "hotpink3",
+                   "T-ALL" = "violetred3",
+                   "B-ALL" = "plum3",
+                   "EVO-DEVO-fetal" = "#2C6C5E",
+                   "EVO-DEVO-postbirth" = "#7AD151FF",
+                   "R2_atlas" = "#1675B6",
+                   "GTEX" = "#6EA3D1")
+
+biotype_colors = c("lncRNA" = "gold",
+                   "protein_coding" = "purple4")
+
+
+```
+
+```{r load data}
+
+heatmap <- readRDS(file = paste(rna_dir,"analysis/quantification","RMS_heatmap_all_cohorts.RDS", sep = "/"))
+
+meta <- read.delim(file = paste(rna_dir,"documentation/all_cohorts",
+                                "rms_meta_all_combined.csv",
+                                sep = "/"), sep = ",")
+
+gtf_df <- rtracklayer::import.gff(paste(rna_dir,"analysis/rnaseq_pipeline/customannotation",
+                                        "RMS_full_novel_filtered_corrected.sorted.gtf", sep = "/")) %>%
+  as.data.frame()
+
+# Surfaceome
+surface_xl <- readxl::read_xlsx("/hpc/pmc_vanheesch/projects/jvandinter/custom_transcriptomes/20221014_JD_T_ALL/analysis/surfaceome_expression/pone.0121314.s003.xlsx")
+surface_xl$`UniProt Cell surface` <- ifelse(is.na(surface_xl$`UniProt Cell surface`) ,F,T)
+
+# Surfaceome
+genes_xl <- readxl::read_xlsx("/hpc/pmc_vanheesch/projects/jvandinter/jorik_tall/documentation/cell_surface_genes.xlsx", col_names = T)
+
+gene_name_id <- gtf_df %>%
+  dplyr::filter(type == "transcript") %>% 
+  dplyr::select(gene_name,gene_id,gene_biotype) %>% 
+  dplyr::distinct()
+
+gene_metadata <- dplyr::left_join(gene_name_id, 
+                                 surface_xl, 
+                                 by = c("gene_name" = "ENTREZ gene symbol")) %>%
+  dplyr::mutate(tm_domain = ifelse(grepl("1",`CSPA category`),
+                                  "high_confidence",
+                                  ifelse(
+                                    grepl("2",`CSPA category`),
+                                    "putative",
+                                    "unspecific"))) %>%
+  dplyr::select(gene_name,gene_id,gene_biotype,tm_domain)
+
+```
+
+# HCP5 heatmap
+
+```{r}
+
+hla_locus_genes <- 
+
+```
+
+```{r}
+
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% hla_locus_genes),]
+
+breaks <- seq(0, 3, length.out = 100)
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta[, c("cohort","sample_id")])
+index <- order(match(meta$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+annot_col$sample_id <- NULL
+annot_col$cohort <- factor(annot_col$cohort, levels = names(cohort_colors))
+
+anno_cols <- list(cohort = setNames(cohort_colors,levels(annot_col$cohort)))
+
+ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col,
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+annot_row <- data.frame(gene_id = rownames(heatmap_matrix)) %>%
+  dplyr::left_join(fp_table[,c("gene_id","gene_biotype")]) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(gene_biotype = factor(gene_biotype, levels = names(biotype_colors))) %>%
+  tibble::column_to_rownames(var = "gene_id")
+
+anno_row_cols <- list(gene_biotype = setNames(biotype_colors,
+                                              levels(annot_row$gene_biotype)))
+
+ha_row <- ComplexHeatmap::HeatmapAnnotation(
+  df = annot_row,
+  which = "row",
+  col = anno_row_cols,
+  show_legend = c(T,T,F),
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+```
+
+# Cell surface heatmap
+
+### Putative
+
+```{r cell surface genes}
+
+cell_surface_markers <- gene_metadata %>%
+  dplyr::filter(tm_domain %in% c("high_confidence","putative"))
+
+plotname <- paste(save_dir,"heatmap",
+                  "cell_surface_expression_pediatric.pdf",
+                  sep = "/")
+
+```
+
+```{r}
+
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% cell_surface_markers$gene_id),]
+
+breaks <- seq(0, 3, length.out = 100)
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta[, c("cohort","sample_id")])
+index <- order(match(meta$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+annot_col$sample_id <- NULL
+annot_col$cohort <- factor(annot_col$cohort, levels = names(cohort_colors))
+
+anno_cols <- list(cohort = setNames(cohort_colors,levels(annot_col$cohort)))
+
+ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col,
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+annot_row <- data.frame(gene_id = rownames(heatmap_matrix)) %>%
+  dplyr::left_join(gene_metadata[,c("gene_id","tm_domain")]) %>%
+  dplyr::distinct() %>%
+  dplyr::mutate(tm_domain = factor(tm_domain, levels = unique(tm_domain))) %>%
+  tibble::column_to_rownames(var = "gene_id")
+
+anno_row_cols <- list(tm_domain = setNames(c("#FFAE42","#D92121"),
+                                              levels(annot_row$tm_domain)))
+
+ha_row <- ComplexHeatmap::HeatmapAnnotation(
+  df = annot_row,
+  which = "row",
+  col = anno_row_cols,
+  show_legend = c(T,T,F),
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+pdf(file = plotname,
+    width = 10,
+    height = 8)
+
+ComplexHeatmap::draw(
+  ComplexHeatmap::Heatmap(matrix = heatmap_matrix,
+                          # Hide names
+                        top_annotation = ha,
+                        left_annotation = ha_row,
+                        column_split = annot_col$cohort,
+                        row_split = annot_row$tm_domain,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  cluster_row_slices = F,
+  cluster_column_slices = F,
+  use_raster = T,
+  raster_quality = 5,
+  raster_magick_filter = "Lanczos2",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  ),heatmap_legend_side = "bottom",
+    ht_gap = unit(0.1, "mm"),
+    annotation_legend_side = "right",
+    legend_grouping = "original")
+dev.off()
+
+ht = ComplexHeatmap::draw(
+  ComplexHeatmap::Heatmap(matrix = heatmap_matrix,
+                          # Hide names
+                        top_annotation = ha,
+                        left_annotation = ha_row,
+                        column_split = annot_col$cohort,
+                        row_split = annot_row$tm_domain,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  cluster_row_slices = F,
+  cluster_column_slices = F,
+  use_raster = T,
+  raster_quality = 5,
+  raster_magick_filter = "Lanczos2",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  ),heatmap_legend_side = "bottom",
+    ht_gap = unit(0.1, "mm"),
+    annotation_legend_side = "right",
+    legend_grouping = "original")
+
+ht = draw(ht)
+rows_cell_surface <- row_order(ht)
+columns_cell_surface <- column_order(ht)
+
+ openxlsx::write.xlsx(columns_cell_surface, 
+                      file = paste(save_dir,"heatmap",'cell_surface_columns.xlsx'))
+ openxlsx::write.xlsx(rows_cell_surface, 
+                      file = paste(save_dir,"heatmap",'cell_surface_rows.xlsx')) 
+
+```
+
+### annotated hits
+
+```{r cell surface genes}
+
+cell_surface_markers <- gene_name_id %>%
+  dplyr::filter(gene_name %in% genes_xl$recognized_gene_name)
+
+plotname <- paste(save_dir,"heatmap",
+                  "cell_surface_expression_pediatric.pdf",
+                  sep = "/")
+
+```
+
+```{r}
+
+heatmap_matrix <- heatmap[which(row.names(heatmap) %in% cell_surface_markers$gene_id),]
+
+# Set the new row names
+rownames(heatmap_matrix) <- gene_name_id$gene_name[match(rownames(heatmap_matrix), gene_name_id$gene_id)]
+
+breaks <- seq(0, 3, length.out = 100)
+
+# Create column annotation metadata
+annot_col <- as.data.frame(meta[, c("cohort","sample_id")])
+index <- order(match(meta$sample_id, colnames(heatmap_matrix)))
+annot_col <- annot_col[index,]
+
+# ComplexHeatmap requires that the column annotation rownames are the same as the column names of the count matrix
+annot_col$sample_id <- NULL
+annot_col$cohort <- factor(annot_col$cohort, levels = names(cohort_colors))
+
+anno_cols <- list(cohort = setNames(cohort_colors,levels(annot_col$cohort)))
+
+ha = ComplexHeatmap::HeatmapAnnotation(
+  df = annot_col,
+  which = "column",
+  col = anno_cols,
+  show_annotation_name = F, 
+  simple_anno_size = unit(0.3, "cm"))
+
+pdf(file = plotname,
+    width = 10,
+    height = 8)
+
+ComplexHeatmap::draw(
+  ComplexHeatmap::Heatmap(matrix = heatmap_matrix,
+                          # Hide names
+                        top_annotation = ha,
+                        column_split = annot_col$cohort,
+  show_row_names = T,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  cluster_row_slices = F,
+  cluster_column_slices = F,
+  use_raster = T,
+  raster_quality = 5,
+  raster_magick_filter = "Lanczos2",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  ),heatmap_legend_side = "bottom",
+    ht_gap = unit(0.1, "mm"),
+    annotation_legend_side = "right",
+    legend_grouping = "original")
+dev.off()
+
+ht = ComplexHeatmap::draw(
+  ComplexHeatmap::Heatmap(matrix = heatmap_matrix,
+                          # Hide names
+                        top_annotation = ha,
+                        left_annotation = ha_row,
+                        column_split = annot_col$cohort,
+                        row_split = annot_row$tm_domain,
+  show_row_names = F,
+  show_row_dend = F,
+  show_column_names = F,
+  show_column_dend = F,
+  cluster_row_slices = F,
+  cluster_column_slices = F,
+  use_raster = T,
+  raster_quality = 5,
+  raster_magick_filter = "Lanczos2",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    title_position = "topcenter",
+    legend_width = unit(10, "line"),
+    title = "Gene Z-scores"
+  ),
+  col = circlize::colorRamp2(breaks, heatmap_cols)
+  ),heatmap_legend_side = "bottom",
+    ht_gap = unit(0.1, "mm"),
+    annotation_legend_side = "right",
+    legend_grouping = "original")
+
+```
